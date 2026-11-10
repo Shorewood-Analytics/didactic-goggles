@@ -28,7 +28,10 @@ for filesystem in ("APFS", "ExFAT"):
         source.mkdir()
         (source / ".metadata_never_index").touch()
         path = str(pathlib.Path(folder) / "test.dmg")
-        run("hdiutil", "create", "-srcfolder", str(source), "-size", "128m", "-fs", filesystem, "-volname", "SandboxProbe", path)
+        if filesystem == "APFS":
+            run("hdiutil", "create", "-srcfolder", str(source), "-size", "128m", "-fs", filesystem, "-volname", "SandboxProbe", path)
+        else:
+            run("hdiutil", "create", "-size", "128m", "-fs", filesystem, "-format", "UDRW", "-volname", "SandboxProbe", path)
         attached = plistlib.loads(run("hdiutil", "attach", "-plist", "-nobrowse", path))
         device = next(item["dev-entry"] for item in attached["system-entities"]
                       if re.fullmatch(r"/dev/disk\d+", item.get("dev-entry", "")))

@@ -225,7 +225,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             windowModel.failures = Dictionary(uniqueKeysWithValues: failures.map { ($0.disk.id, $0.error!) })
             monitor.refresh()
             windowModel.ejecting = false
-            windowModel.message = failures.isEmpty ? "All disks ejected" : "\(failures.count) could not eject"
+            windowModel.message = failures.isEmpty ? "\(results.count) ejected" : "\(failures.count) could not eject"
         }
     }
 

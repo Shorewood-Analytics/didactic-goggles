@@ -23,7 +23,10 @@ final class EjectionIntegrationTests: XCTestCase {
         let sourceFolder = folder.appendingPathComponent("source")
         try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
         try Data().write(to: sourceFolder.appendingPathComponent(".metadata_never_index"))
-        _ = try run("/usr/bin/hdiutil", ["create", "-srcfolder", sourceFolder.path, "-size", "128m", "-fs", filesystem, "-volname", "DiskWatchTest", path])
+        let creation = filesystem == "APFS"
+            ? ["create", "-srcfolder", sourceFolder.path, "-size", "128m", "-fs", filesystem, "-volname", "DiskWatchTest", path]
+            : ["create", "-size", "128m", "-fs", filesystem, "-format", "UDRW", "-volname", "DiskWatchTest", path]
+        _ = try run("/usr/bin/hdiutil", creation)
         let attach = try run("/usr/bin/hdiutil", ["attach", "-plist", "-nobrowse", path])
         let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: attach, format: nil) as? [String: Any])
         let entities = try XCTUnwrap(plist["system-entities"] as? [[String: Any]])
@@ -47,7 +50,9 @@ final class EjectionIntegrationTests: XCTestCase {
         let usage = await DiskUsageReader().read([disk])
         XCTAssertNotNil(usage[disk.id]?.percentUsed, usage[disk.id]?.unavailableReason ?? "")
         let mount = try XCTUnwrap(entities.compactMap { $0["mount-point"] as? String }.first)
-        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: mount).appendingPathComponent(".metadata_never_index"))
+        let busyFile = URL(fileURLWithPath: mount).appendingPathComponent(".metadata_never_index")
+        if filesystem == "ExFAT" { try Data().write(to: busyFile) }
+        let handle = try FileHandle(forReadingFrom: busyFile)
         let busy = await ejector.ejectAll([disk])
         try handle.close()
         XCTAssertFalse(busy[0].succeeded, "An open file must prevent unmount; no force fallback")
@@ -70,7 +75,7 @@ final class EjectionIntegrationTests: XCTestCase {
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
+        process.standardError = FileHandle.standardError
         try process.run()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
