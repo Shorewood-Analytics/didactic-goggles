@@ -1,5 +1,6 @@
 import AppKit
 import DiskDiscovery
+import DiskControl
 import ServiceManagement
 import SwiftUI
 
@@ -7,6 +8,8 @@ import SwiftUI
 struct DiskWatchApp {
     @MainActor
     static func main() {
+        if CommandLine.arguments.contains("--eject-all") { exit(HeadlessEjection.run(.ejectAll)) }
+        if CommandLine.arguments.contains("--diagnose") { exit(HeadlessEjection.run(.diagnose)) }
         // Exercise the signed sandboxed executable in CI without opening a UI.
         if CommandLine.arguments.contains("--smoke-test") {
             let monitor = DiskMonitor()
@@ -40,7 +43,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var loginError: String?
     private let windowModel = DiskWindowModel()
     private let usageReader = DiskUsageReader()
-    private let ejector = DiskEjector()
+    private let ejector = MacEjectionService()
     private var diskWindow: NSWindow?
     private var usageTask: Task<Void, Never>?
     private var usageTimer: Timer?
@@ -218,11 +221,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         windowModel.ejecting = true
         windowModel.failures = [:]
         Task {
-            let results = await ejector.ejectAll(targets) { index, count in
-                windowModel.message = "Ejecting \(index) of \(count)"
+            let results = await ejector.coordinator.ejectAll(targets) { event in
+                windowModel.message = event.detail
             }
             let failures = results.filter { !$0.succeeded }
             windowModel.failures = Dictionary(uniqueKeysWithValues: failures.map { ($0.disk.id, $0.error!) })
+            windowModel.blockers = Dictionary(uniqueKeysWithValues: failures.compactMap { result in
+                result.diagnosis.map { (result.disk.id, $0) }
+            })
             monitor.refresh()
             windowModel.ejecting = false
             windowModel.message = failures.isEmpty ? "\(results.count) ejected" : "\(failures.count) could not eject"

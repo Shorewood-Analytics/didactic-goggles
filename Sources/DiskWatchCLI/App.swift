@@ -1,5 +1,6 @@
 import Foundation
 import DiskDiscovery
+import DiskControl
 import Darwin
 
 @main
@@ -7,8 +8,10 @@ struct DiskWatchCLI {
     @MainActor
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments == ["eject-all"] { exit(HeadlessEjection.run(.ejectAll)) }
+        if arguments == ["diagnose"] { exit(HeadlessEjection.run(.diagnose)) }
         guard arguments.isEmpty || arguments == ["--once"] else {
-            fputs("Usage: disk-watch [--once]\nWithout --once, writes JSON snapshots until interrupted.\n", stderr)
+            fputs("Usage: disk-watch [--once | eject-all | diagnose]\nWithout arguments, writes JSON snapshots until interrupted.\n", stderr)
             exit(arguments == ["--help"] ? EXIT_SUCCESS : EXIT_FAILURE)
         }
         let monitor = DiskMonitor()

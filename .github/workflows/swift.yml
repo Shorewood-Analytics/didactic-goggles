@@ -25,7 +25,7 @@ jobs:
         run: swift test -Xswiftc -warnings-as-errors
       - name: Build sandboxed app bundle
         if: ${{ !cancelled() }}
-        run: sh scripts/build-app.sh
+        run: sh scripts/build-app.sh --sandboxed
       - name: Exercise sandboxed IOKit startup
         if: ${{ !cancelled() }}
         run: dist/DiskWatch.app/Contents/MacOS/DiskWatch --smoke-test
@@ -33,7 +33,9 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check-sandbox.py
       - name: Exercise headless snapshot
-        run: swift run disk-watch --once
+        run: |
+          swift run disk-watch --once
+          swift run disk-watch diagnose
       - name: Verify continuous background operation and shutdown
         run: python3 scripts/check-background.py
       - name: Capture native compact-window previews

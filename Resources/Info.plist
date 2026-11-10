@@ -12,4 +12,5 @@
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>NSAppleEventsUsageDescription</key><string>Disk Watch saves and closes documents holding a disk open, and quits a blocking app only when necessary to eject that disk.</string>
 </dict></plist>

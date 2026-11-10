@@ -1,6 +1,7 @@
 import Foundation
 import IOKit
 import XCTest
+import DiskControl
 @testable import DiskDiscovery
 
 final class EjectionIntegrationTests: XCTestCase {
@@ -25,7 +26,7 @@ final class EjectionIntegrationTests: XCTestCase {
         try Data().write(to: sourceFolder.appendingPathComponent(".metadata_never_index"))
         let creation = filesystem == "APFS"
             ? ["create", "-srcfolder", sourceFolder.path, "-size", "128m", "-fs", filesystem, "-volname", "DiskWatchTest", path]
-            : ["create", "-size", "128m", "-fs", filesystem, "-volname", "DiskWatchTest", path]
+            : ["create", "-size", "512m", "-layout", "MBRSPUD", "-fs", filesystem, "-volname", "DiskWatchTest", path]
         _ = try run("/usr/bin/hdiutil", creation)
         let attach = try run("/usr/bin/hdiutil", ["attach", "-plist", "-nobrowse", path])
         let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: attach, format: nil) as? [String: Any])
@@ -57,6 +58,8 @@ final class EjectionIntegrationTests: XCTestCase {
         let busyFile = URL(fileURLWithPath: mount).appendingPathComponent(".metadata_never_index")
         if filesystem == "ExFAT" { try Data().write(to: busyFile) }
         let handle = try FileHandle(forReadingFrom: busyFile)
+        let holders = await ProcessBlockerInspector().inspect(disk)
+        XCTAssertTrue(holders.blockers.contains { $0.pid == getpid() }, "Must identify the process holding the open file")
         let busy = await ejector.ejectAll([disk])
         try handle.close()
         XCTAssertFalse(busy[0].succeeded, "An open file must prevent unmount; no force fallback")

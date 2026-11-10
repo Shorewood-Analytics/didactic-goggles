@@ -1,11 +1,18 @@
 import Foundation
 import IOKit
 import DiskArbitration
+import Darwin
 
 public struct EjectionResult: Equatable, Sendable {
     public let disk: Disk
     public let error: String?
+    public var arbitrationCode: Int32? = nil
     public var succeeded: Bool { error == nil }
+    public var isBusy: Bool {
+        guard let arbitrationCode else { return false }
+        return arbitrationCode == kDAReturnBusy || arbitrationCode == kDAReturnExclusiveAccess
+            || arbitrationCode == Int32(0xc000 | UInt32(EBUSY))
+    }
 }
 
 private struct ArbitrationFailure {
@@ -81,6 +88,7 @@ public final class DiskEjector {
             // APFS synthesized containers are separate whole media. Unmount
             // their volumes first, then the physical disk's ordinary partitions.
             var unmountFailure: String?
+            var unmountCode: Int32?
             for branch in layout.filter(\.whole).sorted(by: { $0.depth > $1.depth }) {
                 let service = IOServiceGetMatchingService(kIOMainPortDefault, IORegistryEntryIDMatching(branch.id))
                 guard service != 0 else { unmountFailure = "Disk disconnected during unmount."; break }
@@ -91,10 +99,12 @@ public final class DiskEjector {
                     let context = Unmanaged.passRetained(ArbitrationReply(continuation)).toOpaque()
                     DADiskUnmount(target, DADiskUnmountOptions(kDADiskUnmountOptionWhole), arbitrationCallback, context)
                 }
-                if let error, error.code != kDAReturnNotMounted { unmountFailure = error.message; break }
+                if let error, error.code != kDAReturnNotMounted {
+                    unmountFailure = error.message; unmountCode = error.code; break
+                }
             }
             if let unmountFailure {
-                results.append(EjectionResult(disk: disk, error: "Unmount failed: \(unmountFailure)"))
+                results.append(EjectionResult(disk: disk, error: "Unmount failed: \(unmountFailure)", arbitrationCode: unmountCode))
                 continue
             }
             guard let current = try? eligibleDisks(),
@@ -106,7 +116,8 @@ public final class DiskEjector {
                 let context = Unmanaged.passRetained(ArbitrationReply(continuation)).toOpaque()
                 DADiskEject(native, DADiskEjectOptions(kDADiskEjectOptionDefault), arbitrationCallback, context)
             }
-            results.append(EjectionResult(disk: disk, error: ejectError.map { "Eject failed: \($0.message)" }))
+            results.append(EjectionResult(disk: disk, error: ejectError.map { "Eject failed: \($0.message)" },
+                                          arbitrationCode: ejectError?.code))
         }
         return results
     }

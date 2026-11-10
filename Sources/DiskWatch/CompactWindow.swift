@@ -10,6 +10,7 @@ final class DiskWindowModel: ObservableObject {
     @Published var ejecting = false
     @Published var message: String?
     @Published var failures: [UInt64: String] = [:]
+    @Published var blockers: [UInt64: BlockerReport] = [:]
     var refresh: () -> Void = {}
     var ejectAll: () -> Void = {}
 }
@@ -29,7 +30,7 @@ struct CompactDiskWindow: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         ForEach(model.disks) { disk in
-                            DiskRow(disk: disk, usage: model.usage[disk.id], error: model.failures[disk.id])
+                            DiskRow(disk: disk, usage: model.usage[disk.id], error: model.failures[disk.id], report: model.blockers[disk.id])
                             if disk.id != model.disks.last?.id { Divider().padding(.leading, 39) }
                         }
                     }
@@ -65,6 +66,7 @@ private struct DiskRow: View {
     let disk: Disk
     let usage: DiskUsage?
     let error: String?
+    let report: BlockerReport?
     @State private var details = false
 
     var body: some View {
@@ -94,7 +96,7 @@ private struct DiskRow: View {
         .buttonStyle(.plain)
         .onHover { details = $0 }
         .popover(isPresented: $details, arrowEdge: .trailing) {
-            DiskDetails(disk: disk, usage: usage, error: error)
+            DiskDetails(disk: disk, usage: usage, error: error, report: report)
         }
         .accessibilityLabel("\(disk.name), \(bytes(disk.sizeBytes))")
         .accessibilityHint("Show disk details")
@@ -105,6 +107,7 @@ struct DiskDetails: View {
     let disk: Disk
     let usage: DiskUsage?
     let error: String?
+    var report: BlockerReport? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -122,6 +125,15 @@ struct DiskDetails: View {
             }
             if let reason = usage?.unavailableReason { Text(reason).foregroundStyle(.secondary) }
             if let error { Text(error).foregroundStyle(.orange) }
+            if let report {
+                ForEach(report.blockers) { blocker in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(blocker.name) · PID \(blocker.pid)").fontWeight(.medium)
+                        Text(blocker.paths.joined(separator: "\n")).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                ForEach(report.limitations, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+            }
             Text("Fullness is based on formatted space. Link rates are reported by macOS, not benchmarked.")
                 .font(.caption).foregroundStyle(.secondary)
             if let usage {
