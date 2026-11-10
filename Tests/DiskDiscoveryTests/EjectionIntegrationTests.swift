@@ -24,17 +24,39 @@ final class EjectionIntegrationTests: XCTestCase {
         let sourceFolder = folder.appendingPathComponent("source")
         try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
         try Data().write(to: sourceFolder.appendingPathComponent(".metadata_never_index"))
-        let creation = filesystem == "APFS"
-            ? ["create", "-srcfolder", sourceFolder.path, "-size", "128m", "-fs", filesystem, "-volname", "DiskWatchTest", path]
-            : ["create", "-size", "512m", "-layout", "MBRSPUD", "-fs", filesystem, "-volname", "DiskWatchTest", path]
-        _ = try run("/usr/bin/hdiutil", creation)
+        if filesystem == "APFS" {
+            _ = try run("/usr/bin/hdiutil", ["create", "-srcfolder", sourceFolder.path, "-size", "128m", "-fs", filesystem, "-volname", "DiskWatchTest", path])
+        } else {
+            _ = try run("/usr/bin/hdiutil", ["create", "-size", "512m", "-layout", "NONE", path])
+            let raw = try run("/usr/bin/hdiutil", ["attach", "-nomount", "-plist", path])
+            let rawPlist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: raw, format: nil) as? [String: Any])
+            let rawEntities = try XCTUnwrap(rawPlist["system-entities"] as? [[String: Any]])
+            let rawDevice = try XCTUnwrap(rawEntities.compactMap { $0["dev-entry"] as? String }.first {
+                $0.range(of: #"^/dev/disk[0-9]+$"#, options: .regularExpression) != nil
+            })
+            defer {
+                if (try? imageOwnsDevice(path: path, device: rawDevice)) == true {
+                    _ = try? run("/usr/bin/hdiutil", ["detach", rawDevice])
+                }
+            }
+            // Resolve the exact image association again before formatting.
+            // A stale BSD name must never select a physical host disk.
+            guard try imageOwnsDevice(path: path, device: rawDevice) else {
+                throw NSError(domain: "Fixture does not own the device", code: 1)
+            }
+            _ = try run("/usr/sbin/diskutil", ["eraseDisk", "ExFAT", "DiskWatchTest", "MBR", rawDevice])
+        }
         let attach = try run("/usr/bin/hdiutil", ["attach", "-plist", "-nobrowse", path])
         let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: attach, format: nil) as? [String: Any])
         let entities = try XCTUnwrap(plist["system-entities"] as? [[String: Any]])
         let device = try XCTUnwrap(entities.compactMap { $0["dev-entry"] as? String }.first {
             $0.range(of: #"^/dev/disk[0-9]+$"#, options: .regularExpression) != nil
         })
-        defer { _ = try? run("/usr/bin/hdiutil", ["detach", device]) }
+        defer {
+            if (try? imageOwnsDevice(path: path, device: device)) == true {
+                _ = try? run("/usr/bin/hdiutil", ["detach", device])
+            }
+        }
         let name = String(device.dropFirst(5))
         let media = IOServiceGetMatchingService(kIOMainPortDefault, IOBSDNameMatching(kIOMainPortDefault, 0, name))
         XCTAssertNotEqual(media, 0)
@@ -74,6 +96,18 @@ final class EjectionIntegrationTests: XCTestCase {
         XCTAssertFalse(ejector.isEjecting)
         XCTAssertFalse(MountedSpace.snapshot().contains { $0.path == mount })
         XCTAssertTrue(MediaLayout.read(disk).isEmpty, "Successful eject removes the original registry attachment")
+    }
+
+    private func imageOwnsDevice(path: String, device: String) throws -> Bool {
+        let data = try run("/usr/bin/hdiutil", ["info", "-plist"])
+        let info = try XCTUnwrap(try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
+        let images = info["images"] as? [[String: Any]] ?? []
+        let expected = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        return images.contains { image in
+            guard let imagePath = image["image-path"] as? String,
+                  URL(fileURLWithPath: imagePath).resolvingSymlinksInPath() == expected else { return false }
+            return (image["system-entities"] as? [[String: Any]] ?? []).contains { ($0["dev-entry"] as? String) == device }
+        }
     }
 
     private func run(_ executable: String, _ arguments: [String]) throws -> Data {
