@@ -35,6 +35,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check-sandbox.py
       - name: Build and exercise direct-distribution app bundle
+        if: ${{ !cancelled() }}
         run: |
           sh scripts/build-app.sh
           dist/DiskWatch.app/Contents/MacOS/DiskWatch --smoke-test
@@ -52,11 +53,26 @@ jobs:
           path: dist/DiskWatch-macOS.zip
           if-no-files-found: error
       - name: Exercise headless snapshot
+        if: ${{ !cancelled() }}
         run: |
           swift run disk-watch --once
           swift run disk-watch diagnose
       - name: Verify continuous background operation and shutdown
+        if: ${{ !cancelled() }}
         run: python3 scripts/check-background.py
+      - name: Capture GUI diagnostics on failure
+        if: failure()
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/diagnostics"
+          /usr/sbin/screencapture -x "$RUNNER_TEMP/diagnostics/desktop.png"
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-failure-diagnostics
+          path: ${{ runner.temp }}/diagnostics/
+          if-no-files-found: ignore
       - name: Capture native compact-window previews
         if: ${{ !cancelled() }}
         run: swift run DiskWatch --capture-previews "$RUNNER_TEMP/previews"

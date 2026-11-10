@@ -17,14 +17,33 @@ final class NativeSaveTests: XCTestCase {
         let path = directory.appendingPathComponent("save-proof.txt")
         try "Original\n".write(to: path, atomically: true, encoding: .utf8)
         let marker = "DiskWatch saved unsaved work " + UUID().uuidString
+        // osacompile can start TextEdit only to fetch its dictionary. Explicitly
+        // open our document through Launch Services so normal GUI startup finishes
+        // before asking it to handle scripted document operations.
+        let applicationURL = try XCTUnwrap(NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.TextEdit"))
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.addsToRecentItems = false
+        let application = try await NSWorkspace.shared.open([path], withApplicationAt: applicationURL,
+                                                            configuration: configuration)
+        let launchDeadline = Date().addingTimeInterval(15)
+        while !application.isFinishedLaunching, !application.isTerminated, Date() < launchDeadline {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertTrue(application.isFinishedLaunching && !application.isTerminated,
+                      "TextEdit did not finish launching (PID \(application.processIdentifier))")
+        guard application.isFinishedLaunching, !application.isTerminated else { return }
         let setup = await ScriptRunner.run(#"""
         on run argv
             with timeout of 30 seconds
                 tell application "TextEdit"
-                    -- Compiling the production script can launch TextEdit to read
-                    -- its dictionary. A running app is safe only with no documents.
-                    if (count of documents) is not 0 then error "Qualification requires TextEdit to have no existing documents"
-                    open POSIX file (item 1 of argv)
+                    activate
+                    -- The only document must be the test-owned file opened above.
+                    -- Never save or close documents left by another application user.
+                    if (count of documents) is not 1 then error "Qualification requires only the test document to be open"
+                    set actualFile to (POSIX file (path of front document)) as alias
+                    set expectedFile to (POSIX file (item 1 of argv)) as alias
+                    if actualFile is not expectedFile then error "TextEdit front document is not the test fixture"
                     set text of front document to (item 2 of argv)
                 end tell
             end timeout
@@ -33,7 +52,6 @@ final class NativeSaveTests: XCTestCase {
         """#, arguments: [path.path, marker])
         XCTAssertTrue(setup.succeeded, setup.output)
         guard setup.succeeded else { return }
-        let application = try XCTUnwrap(NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").first)
         // Qualify the actual save/close script with an isolated fixture directory.
         // ApplicationReleaser itself requires a real, currently held disk and must
         // reject forged disk identities instead of bypassing that safety check.
