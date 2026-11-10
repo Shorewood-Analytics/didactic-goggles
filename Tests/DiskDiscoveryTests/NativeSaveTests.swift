@@ -33,6 +33,20 @@ final class NativeSaveTests: XCTestCase {
         XCTAssertTrue(application.isFinishedLaunching && !application.isTerminated,
                       "TextEdit did not finish launching (PID \(application.processIdentifier))")
         guard application.isFinishedLaunching, !application.isTerminated else { return }
+        let diagnostics = Task {
+            do { try await Task.sleep(nanoseconds: 5_000_000_000) }
+            catch { return }
+            guard !Task.isCancelled,
+                  let runnerTemporary = ProcessInfo.processInfo.environment["RUNNER_TEMP"] else { return }
+            let folder = URL(fileURLWithPath: runnerTemporary).appendingPathComponent("diagnostics", isDirectory: true)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let capture = Process()
+            capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            capture.arguments = ["-x", folder.appendingPathComponent("native-save-during-automation.png").path]
+            do { try capture.run(); capture.waitUntilExit() }
+            catch { print("Could not capture automation diagnostics:", error) }
+        }
+        defer { diagnostics.cancel() }
         let setup = await ScriptRunner.run(#"""
         on run argv
             with timeout of 30 seconds
@@ -40,7 +54,8 @@ final class NativeSaveTests: XCTestCase {
                     activate
                     -- The only document must be the test-owned file opened above.
                     -- Never save or close documents left by another application user.
-                    if (count of documents) is not 1 then error "Qualification requires only the test document to be open"
+                    set docs to get every document
+                    if (count docs) is not 1 then error "Qualification requires only the test document to be open"
                     set actualFile to (POSIX file (path of front document)) as alias
                     set expectedFile to (POSIX file (item 1 of argv)) as alias
                     if actualFile is not expectedFile then error "TextEdit front document is not the test fixture"
@@ -50,6 +65,7 @@ final class NativeSaveTests: XCTestCase {
             return "Document changed"
         end run
         """#, arguments: [path.path, marker])
+        diagnostics.cancel()
         XCTAssertTrue(setup.succeeded, setup.output)
         guard setup.succeeded else { return }
         // Qualify the actual save/close script with an isolated fixture directory.
