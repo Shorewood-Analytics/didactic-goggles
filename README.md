@@ -130,9 +130,22 @@ duplicate notifications, restart, stale callbacks, error recovery, and native
 notification setup/teardown. An integration test uses a temporary 1 MiB RAM disk
 to exercise real arrival/removal callbacks and virtual-media exclusion. A disposable APFS image tests capacity accounting and unmount/ejection through
 real Disk Arbitration callbacks, including a separately signed sandboxed probe.
+The same checks run against exFAT. Busy-disk tests verify refusal while a file is
+open and successful ejection after it closes. Coordinator tests cover cancellation,
+failed saves, fresh process identities, and newly appearing holders.
 CI also runs the sandboxed executable and verifies the headless process stays alive until
 SIGTERM/SIGINT, then shuts down cleanly. Synthetic
 fixtures and CI startup checks do not establish real hardware coverage.
+
+CI also opts into a disposable TextEdit session with
+`DISK_WATCH_AUTOMATION_TESTS=1` to verify that the production automation script
+saves changed file contents before quitting. This test is skipped by default on
+personal Macs; only enable it in a disposable GUI session with TextEdit closed.
+It qualifies TextEdit's save behavior, not every application's scripting support.
+
+Successful Swift workflow runs provide a `DiskWatch-macOS` artifact containing
+the direct development app and a `native-ui-previews` artifact containing example
+window renders. The app artifact uses an ad-hoc signature and is not notarized.
 
 Before accepting a build on a Mac, verify:
 
@@ -144,6 +157,9 @@ Before accepting a build on a Mac, verify:
 4. Sleep/wake with devices connected, then disconnect/reconnect them.
 5. Enable startup, log out/in, confirm the process runs; disable startup and repeat.
 6. Mount a disk image and verify it does not appear as a physical disk.
+7. In a disposable session, test Eject All with saved and modified documents on a
+   test disk, including denied Automation permission and an unsupported application.
+   Confirm saved contents, failure reporting, and preservation of unrelated apps.
 
 Apple references: [matching notifications](https://developer.apple.com/documentation/iokit/1514362-ioserviceaddmatchingnotification),
 [storage protocol characteristics](https://github.com/apple-oss-distributions/IOStorageFamily/blob/main/IOStorageProtocolCharacteristics.h),

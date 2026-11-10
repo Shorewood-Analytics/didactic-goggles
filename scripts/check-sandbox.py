@@ -45,7 +45,7 @@ for filesystem in ("APFS", "ExFAT"):
                               if re.fullmatch(r"/dev/disk\d+", item.get("dev-entry", "")))
             try:
                 assert image_owns_device(path, raw_device), "Refusing to format anything except the test-owned image"
-                run("diskutil", "eraseDisk", "ExFAT", "SandboxProbe", "MBR", raw_device)
+                run("diskutil", "eraseDisk", "ExFAT", "DWPROBE", "MBR", raw_device)
             finally:
                 if image_owns_device(path, raw_device):
                     run("hdiutil", "detach", raw_device)

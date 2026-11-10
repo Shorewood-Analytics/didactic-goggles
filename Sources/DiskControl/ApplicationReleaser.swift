@@ -70,13 +70,15 @@ public final class ApplicationReleaser {
                 repeat with w in (get every Finder window)
                     try
                         set p to POSIX path of ((target of w) as alias)
-                        repeat with root in roots
-                            if p is (root as text) or p starts with ((root as text) & "/") then
-                                close w
-                                set closedCount to closedCount + 1
-                                exit repeat
-                            end if
-                        end repeat
+                        considering case
+                            repeat with root in roots
+                                if p is (root as text) or p starts with ((root as text) & "/") then
+                                    close w
+                                    set closedCount to closedCount + 1
+                                    exit repeat
+                                end if
+                            end repeat
+                        end considering
                     end try
                 end repeat
             end tell
@@ -112,9 +114,11 @@ public final class ApplicationReleaser {
                     end try
                     if docPath is "missing value" then set docPath to ""
                     set affected to (mode is "quitBlockingApp")
-                    repeat with root in roots
-                        if docPath is (root as text) or docPath starts with ((root as text) & "/") then set affected to true
-                    end repeat
+                    considering case
+                        repeat with root in roots
+                            if docPath is (root as text) or docPath starts with ((root as text) & "/") then set affected to true
+                        end repeat
+                    end considering
                     if affected then
                         set changed to get modified of d
                         if changed then

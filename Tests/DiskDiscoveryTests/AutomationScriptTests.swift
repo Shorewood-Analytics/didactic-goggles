@@ -22,4 +22,12 @@ final class AutomationScriptTests: XCTestCase {
             XCTAssertEqual(process.terminationStatus, 0, String(decoding: message, as: UTF8.self))
         }
     }
+
+    func testAutomationHelperIsBoundedByTimeout() async {
+        let start = Date()
+        let result = await ScriptRunner.run("delay 30", arguments: [], timeout: 0.1)
+        XCTAssertFalse(result.succeeded)
+        XCTAssertTrue(result.output.contains("timed out"), result.output)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10, "The helper must not survive its deadline")
+    }
 }

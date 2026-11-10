@@ -11,9 +11,6 @@ final class NativeSaveTests: XCTestCase {
         guard ProcessInfo.processInfo.environment["DISK_WATCH_AUTOMATION_TESTS"] == "1" else {
             throw XCTSkip("Real-app save qualification requires an authorized disposable GUI session")
         }
-        XCTAssertTrue(NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").isEmpty,
-                      "Qualification requires TextEdit to start closed")
-        guard NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").isEmpty else { return }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -24,6 +21,9 @@ final class NativeSaveTests: XCTestCase {
         on run argv
             with timeout of 30 seconds
                 tell application "TextEdit"
+                    -- Compiling the production script can launch TextEdit to read
+                    -- its dictionary. A running app is safe only with no documents.
+                    if (count of documents) is not 0 then error "Qualification requires TextEdit to have no existing documents"
                     open POSIX file (item 1 of argv)
                     set text of front document to (item 2 of argv)
                 end tell

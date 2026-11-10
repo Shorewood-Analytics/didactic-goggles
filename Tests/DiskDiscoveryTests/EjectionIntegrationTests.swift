@@ -44,7 +44,7 @@ final class EjectionIntegrationTests: XCTestCase {
             guard try imageOwnsDevice(path: path, device: rawDevice) else {
                 throw NSError(domain: "Fixture does not own the device", code: 1)
             }
-            _ = try run("/usr/sbin/diskutil", ["eraseDisk", "ExFAT", "DiskWatchTest", "MBR", rawDevice])
+            _ = try run("/usr/sbin/diskutil", ["eraseDisk", "ExFAT", "DWTEST", "MBR", rawDevice])
         }
         let attach = try run("/usr/bin/hdiutil", ["attach", "-plist", "-nobrowse", path])
         let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: attach, format: nil) as? [String: Any])
