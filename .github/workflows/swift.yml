@@ -1,0 +1,30 @@
+name: Swift
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build and test library, background app, and CLI
+        run: swift test -Xswiftc -warnings-as-errors
+      - name: Build sandboxed app bundle
+        run: sh scripts/build-app.sh
+      - name: Exercise sandboxed IOKit startup
+        run: dist/DiskWatch.app/Contents/MacOS/DiskWatch --smoke-test
+      - name: Exercise headless snapshot
+        run: swift run disk-watch --once
