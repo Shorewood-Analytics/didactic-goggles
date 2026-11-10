@@ -80,19 +80,43 @@ final class EjectionIntegrationTests: XCTestCase {
         let busyFile = URL(fileURLWithPath: mount).appendingPathComponent(".metadata_never_index")
         if filesystem == "ExFAT" { try Data().write(to: busyFile) }
         let handle = try FileHandle(forReadingFrom: busyFile)
-        let holders = await ProcessBlockerInspector().inspect(disk)
+        defer { try? handle.close() }
+        let inspector = ProcessBlockerInspector()
+        let holders = await inspector.inspect(disk)
         XCTAssertTrue(holders.blockers.contains { $0.pid == getpid() }, "Must identify the process holding the open file")
         let busy = await ejector.ejectAll([disk])
-        try handle.close()
         XCTAssertFalse(busy[0].succeeded, "An open file must prevent unmount; no force fallback")
+        XCTAssertTrue(busy[0].isBusy, "The native refusal must enter targeted recovery: \(busy[0].error ?? "")")
         XCTAssertTrue(MountedSpace.snapshot().contains { $0.path == mount })
 
         let stale = Disk(id: UInt64.max, bsdName: "disk999999", name: "Stale", sizeBytes: 1,
                          transport: "USB", connection: .external)
-        let results = await ejector.ejectAll([stale, disk, disk])
+        var releases = 0
+        let coordinator = EjectionCoordinator(eject: { target in
+            let result = await ejector.ejectAll([target])[0]
+            return .init(error: result.error, isBusy: result.isBusy)
+        }, inspect: { await inspector.inspect($0) }, release: { _, holder, level in
+            // Release only the test's own handle; never signal an application
+            // discovered on the host. All inspection/ejection here is native.
+            guard holder.pid == getpid() else { return .init(succeeded: false, detail: "Not the test holder") }
+            XCTAssertEqual(level, .closeDocuments)
+            do {
+                try handle.close()
+                releases += 1
+                return .init(succeeded: true, detail: "Closed the test-owned file")
+            } catch { return .init(succeeded: false, detail: error.localizedDescription) }
+        }, verify: { target in
+            for _ in 0..<30 {
+                if DiskInspection.presence(of: target) == .gone { return true }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            return false
+        })
+        let results = await coordinator.ejectAll([stale, disk, disk])
         XCTAssertEqual(results.count, 2, "Batch deduplicates attachments and continues after failure")
         XCTAssertFalse(results[0].succeeded)
         XCTAssertTrue(results[1].succeeded, results[1].error ?? "")
+        XCTAssertEqual(releases, 1, "Native busy status, diagnosis, targeted release, retry and verification must connect end to end")
         XCTAssertFalse(ejector.isEjecting)
         XCTAssertFalse(MountedSpace.snapshot().contains { $0.path == mount })
         XCTAssertTrue(MediaLayout.read(disk).isEmpty, "Successful eject removes the original registry attachment")
