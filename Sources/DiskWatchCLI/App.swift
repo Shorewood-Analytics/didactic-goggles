@@ -10,9 +10,11 @@ struct DiskWatchCLI {
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments == ["eject-all"] { exit(HeadlessEjection.run(.ejectAll)) }
         if arguments == ["diagnose"] { exit(HeadlessEjection.run(.diagnose)) }
+        let usage = "Usage: disk-watch [--once | eject-all | diagnose]\nWithout arguments, writes JSON snapshots until interrupted.\nEjection may save and close documents on busy disks and quit the blocking app."
+        if arguments == ["--help"] { print(usage); return }
         guard arguments.isEmpty || arguments == ["--once"] else {
-            fputs("Usage: disk-watch [--once | eject-all | diagnose]\nWithout arguments, writes JSON snapshots until interrupted.\n", stderr)
-            exit(arguments == ["--help"] ? EXIT_SUCCESS : EXIT_FAILURE)
+            fputs("\(usage)\n", stderr)
+            exit(EXIT_FAILURE)
         }
         let monitor = DiskMonitor()
         let encoder = JSONEncoder()

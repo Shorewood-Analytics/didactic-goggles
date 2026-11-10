@@ -19,8 +19,13 @@ name. Missing information is explicitly marked unavailable. The menu-bar icon
 reopens the window; closing the window keeps background monitoring running.
 
 **Eject All** captures the currently detected disks, unmounts every volume on each
-whole disk, then ejects it. A spinner and count show progress. Busy or refused disks
-stay listed with an error in their hover details. Newly attached disks are not added
+whole disk, then ejects it. A spinner and count show progress. If a disk is busy,
+the direct build identifies its process holders and attempts to save and close
+affected documents. If the same application still blocks ejection, it attempts to
+save its remaining documents and quit that application. Failed saves stop escalation;
+unsupported or inaccessible applications remain open. Busy or refused disks stay
+listed with an error and available process details. macOS may request Automation
+permission for each application. Newly attached disks are not added
 to an operation already underway, and registry identity is checked before acting. Choose
 **Start at login** to register it with macOS; the menu reports pending approval
 and links to Login Items settings. Move the app to its permanent location before
@@ -28,8 +33,12 @@ enabling login startup. **Quit Disk Watch** stops monitoring until the next laun
 This is a per-user background process, not a root/system daemon; it does not run
 before login or after logout. The app reconciles its inventory after sleep.
 
-The build script signs the app with the App Sandbox entitlement, using an ad-hoc
-identity by default. Set `DISK_WATCH_SIGNING_IDENTITY` for your own signing identity.
+The build script produces a direct-distribution app with the Apple Events
+entitlement, using an ad-hoc signing identity by default. This build supports
+process diagnosis and application automation. For a sandboxed build, run
+`sh scripts/build-app.sh --sandboxed`; disk discovery, capacity, and normal ejection
+remain available, but process inspection and application automation are restricted
+by the sandbox. Set `DISK_WATCH_SIGNING_IDENTITY` for your own signing identity.
 Distribution signing, notarization, an App Store archive, and physical-device
 qualification are separate from this development build.
 
@@ -64,6 +73,8 @@ The included headless adapter uses exactly the same library:
 ```sh
 swift run disk-watch --once   # One JSON array
 swift run disk-watch          # JSON lines: initial snapshot, then changed snapshots
+swift run disk-watch diagnose # JSON process-holder reports; no application control
+swift run disk-watch eject-all # Save/close blockers as needed, then eject captured disks
 ```
 
 The continuous mode remains running until SIGINT/SIGTERM. Consumers must read
@@ -71,6 +82,15 @@ stdout continuously; errors are reported on stderr. Discovery remains IOKit-base
 filesystem counters off the main thread. It needs no diskutil subprocess or
 file-content permission. GUI details refresh every 30
 seconds, on disk changes, on wake, and on manual refresh.
+
+The built app also includes `Contents/MacOS/disk-watch` for headless use. Ejection
+writes a JSON result array to stdout and progress events to stderr, returning zero
+only when every target's removal is verified. GUI and CLI ejection requests are
+serialized per user within the same build mode. Automation never force-quits an
+application or force-unmounts a disk. Unsaved documents encountered during quit
+are saved under `~/Library/Application Support/DiskWatch/Recovered Work/` when the
+application supports saving there. Unsupported save commands or denied Automation
+permissions produce a failure report; they do not authorize discarding work.
 
 ## Discovery policy
 
@@ -89,7 +109,7 @@ Each notification reconciles the inventory. Disk attachment detection is event-d
 
 One physical medium is listed once, regardless of partition count. Discovery does
 not depend on mounting or filesystem readability. Discovery and capacity queries do not open disk contents or mount media.
-Ejection uses Disk Arbitration only after an explicit Eject All action; it never
+Ejection uses Disk Arbitration only after an explicit Eject All action or command; it never
 force-unmounts, formats, or escalates privileges.
 Unknown registry layouts are not silently classified as external; older readers
 that do not report `Secure Digital` require a captured fixture and explicit support.
@@ -98,9 +118,11 @@ that do not report `Secure Digital` require a captured fixture and explicit supp
 
 ```sh
 swift test -Xswiftc -warnings-as-errors
-sh scripts/build-app.sh
+sh scripts/build-app.sh --sandboxed
 dist/DiskWatch.app/Contents/MacOS/DiskWatch --smoke-test
 python3 scripts/check-sandbox.py
+sh scripts/build-app.sh
+dist/DiskWatch.app/Contents/MacOS/DiskWatch --smoke-test
 ```
 
 Tests cover selection policy, initial discovery, add/remove reconciliation,

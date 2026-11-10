@@ -21,7 +21,7 @@ enum MediaLayout {
         let root = IOServiceGetMatchingService(kIOMainPortDefault, IORegistryEntryIDMatching(disk.id))
         guard root != 0 else { return [] }
         defer { IOObjectRelease(root) }
-        guard let first = node(root), first.bsdName == disk.bsdName else { return [] }
+        guard let first = node(root), first.whole, first.bsdName == disk.bsdName else { return [] }
         var iterator: io_iterator_t = 0
         guard IORegistryEntryCreateIterator(root, kIOServicePlane, IOOptionBits(kIORegistryIterateRecursively),
                                            &iterator) == KERN_SUCCESS else { return [] }
@@ -32,9 +32,16 @@ enum MediaLayout {
             let entry = IOIteratorNext(iterator)
             guard entry != 0 else { break }
             defer { IOObjectRelease(entry) }
-            if let item = node(entry), seen.insert(item.id).inserted { result.append(item) }
+            guard IOObjectConformsTo(entry, "IOMedia") != 0 else { continue }
+            // A disappearing or unreadable medium must not silently drop out of
+            // an otherwise successful capacity/ejection topology snapshot.
+            guard let item = node(entry) else { return [] }
+            if seen.insert(item.id).inserted { result.append(item) }
         }
-        return result
+        // Registry changes can invalidate a recursive iterator before it has
+        // returned every volume. Reject that partial inventory and retry on the
+        // next refresh instead of treating it as the complete disk layout.
+        return IOIteratorIsValid(iterator) != 0 ? result : []
     }
 
     private static func node(_ entry: io_registry_entry_t) -> MediaNode? {

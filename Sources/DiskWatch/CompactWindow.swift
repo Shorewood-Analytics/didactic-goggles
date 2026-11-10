@@ -9,6 +9,7 @@ final class DiskWindowModel: ObservableObject {
     @Published var refreshing = false
     @Published var ejecting = false
     @Published var message: String?
+    @Published var monitoringError: String?
     @Published var failures: [UInt64: String] = [:]
     @Published var blockers: [UInt64: BlockerReport] = [:]
     var refresh: () -> Void = {}
@@ -22,8 +23,10 @@ struct CompactDiskWindow: View {
         VStack(spacing: 0) {
             if model.disks.isEmpty {
                 HStack(spacing: 10) {
-                    Image(systemName: "externaldrive").font(.title2).foregroundStyle(.secondary)
-                    Text("No external disks or SD cards").foregroundStyle(.secondary)
+                    Image(systemName: model.monitoringError == nil ? "externaldrive" : "exclamationmark.triangle")
+                        .font(.title2).foregroundStyle(.secondary)
+                    Text(model.monitoringError == nil ? "No external disks or SD cards" : "Disk inventory unavailable")
+                        .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, minHeight: 66)
             } else {
@@ -45,14 +48,16 @@ struct CompactDiskWindow: View {
                 .buttonStyle(.borderless)
                 .disabled(model.refreshing || model.ejecting)
                 .help("Refresh disk details")
-                Text(model.message ?? "\(model.disks.count) connected")
+                .accessibilityLabel("Refresh disk details")
+                Text(model.monitoringError ?? model.message ?? "\(model.disks.count) connected")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    .help(model.message ?? "Monitoring continues when this window closes.")
+                    .help(model.monitoringError ?? model.message ?? "Monitoring continues when this window closes.")
                 Spacer(minLength: 4)
                 if model.ejecting { ProgressView().controlSize(.small).scaleEffect(0.8) }
                 Button(model.ejecting ? "Ejecting…" : "Eject All", action: model.ejectAll)
-                    .disabled(model.disks.isEmpty || model.ejecting)
+                    .disabled(model.disks.isEmpty || model.ejecting || model.monitoringError != nil)
                     .keyboardShortcut("e", modifiers: [.command, .shift])
+                    .help("Eject all disks. If a disk is busy, save and close its documents and, if needed, quit the blocking app.")
             }
             .padding(.horizontal, 10).padding(.vertical, 9)
         }
@@ -67,10 +72,17 @@ private struct DiskRow: View {
     let usage: DiskUsage?
     let error: String?
     let report: BlockerReport?
-    @State private var details = false
+    @State private var hovering = false
+    @State private var pinned = false
+
+    private var details: Binding<Bool> {
+        Binding(get: { hovering || pinned }, set: { presented in
+            if !presented { hovering = false; pinned = false }
+        })
+    }
 
     var body: some View {
-        Button { details.toggle() } label: {
+        Button { pinned.toggle() } label: {
             HStack(spacing: 9) {
                 Image(systemName: disk.cardType != nil || disk.connection == .builtInSDReader ? "sdcard" : "externaldrive")
                     .font(.system(size: 21)).foregroundStyle(error == nil ? Color.accentColor : .orange)
@@ -94,12 +106,12 @@ private struct DiskRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { details = $0 }
-        .popover(isPresented: $details, arrowEdge: .trailing) {
+        .onHover { hovering = $0 }
+        .popover(isPresented: details, arrowEdge: .trailing) {
             DiskDetails(disk: disk, usage: usage, error: error, report: report)
         }
         .accessibilityLabel("\(disk.name), \(bytes(disk.sizeBytes))")
-        .accessibilityHint("Show disk details")
+        .accessibilityHint("Click to keep disk details open")
     }
 }
 

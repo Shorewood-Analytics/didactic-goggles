@@ -8,10 +8,19 @@ import SwiftUI
 struct DiskWatchApp {
     @MainActor
     static func main() {
-        if CommandLine.arguments.contains("--eject-all") { exit(HeadlessEjection.run(.ejectAll)) }
-        if CommandLine.arguments.contains("--diagnose") { exit(HeadlessEjection.run(.diagnose)) }
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        let usage = "Usage: DiskWatch [--eject-all | --diagnose | --smoke-test | --capture-previews DIRECTORY]\nEjection may save and close documents on busy disks and quit the blocking app."
+        if arguments == ["--help"] { print(usage); return }
+        guard arguments.isEmpty || arguments == ["--eject-all"] || arguments == ["--diagnose"]
+                || arguments == ["--smoke-test"]
+                || (arguments.count == 2 && arguments.first == "--capture-previews") else {
+            fputs("\(usage)\n", stderr)
+            exit(EXIT_FAILURE)
+        }
+        if arguments == ["--eject-all"] { exit(HeadlessEjection.run(.ejectAll)) }
+        if arguments == ["--diagnose"] { exit(HeadlessEjection.run(.diagnose)) }
         // Exercise the signed sandboxed executable in CI without opening a UI.
-        if CommandLine.arguments.contains("--smoke-test") {
+        if arguments == ["--smoke-test"] {
             let monitor = DiskMonitor()
             do {
                 try monitor.start()
@@ -24,7 +33,7 @@ struct DiskWatchApp {
             }
             return
         }
-        if CommandLine.arguments.contains("--capture-previews") {
+        if arguments.first == "--capture-previews" {
             capturePreviews()
             return
         }
@@ -64,7 +73,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         monitor.onChange = { [weak self] in
             guard let self else { return }
             self.windowModel.disks = self.monitor.disks
-            self.windowModel.message = self.monitor.lastError
+            self.windowModel.monitoringError = self.monitor.lastError
+            let ids = Set(self.monitor.disks.map(\.id))
+            self.windowModel.failures = self.windowModel.failures.filter { ids.contains($0.key) }
+            self.windowModel.blockers = self.windowModel.blockers.filter { ids.contains($0.key) }
             self.render()
             self.resizeWindow()
             self.updateUsage()
@@ -215,17 +227,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     }
 
     private func ejectAll() {
-        guard !windowModel.ejecting else { return }
+        guard !windowModel.ejecting, monitor.lastError == nil else { return }
         let targets = monitor.disks
         guard !targets.isEmpty else { return }
         windowModel.ejecting = true
         windowModel.failures = [:]
+        windowModel.blockers = [:]
+        windowModel.message = "Preparing to eject \(targets.count) disk(s)"
         Task {
             let results = await ejector.coordinator.ejectAll(targets) { event in
-                windowModel.message = event.detail
+                let position = targets.firstIndex { $0.id == event.diskID }.map { $0 + 1 } ?? 1
+                windowModel.message = "\(position)/\(targets.count) · \(event.detail)"
             }
             let failures = results.filter { !$0.succeeded }
-            windowModel.failures = Dictionary(uniqueKeysWithValues: failures.map { ($0.disk.id, $0.error!) })
+            windowModel.failures = Dictionary(uniqueKeysWithValues: failures.map { ($0.disk.id, $0.error ?? "Could not eject disk") })
             windowModel.blockers = Dictionary(uniqueKeysWithValues: failures.compactMap { result in
                 result.diagnosis.map { (result.disk.id, $0) }
             })
