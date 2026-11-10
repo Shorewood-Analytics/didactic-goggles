@@ -98,41 +98,44 @@ public final class ApplicationReleaser {
         set closedCount to 0
         with timeout of 30 seconds
             if not (application id targetID is running) then return "Application already exited"
+            using terms from application "TextEdit"
             tell application id targetID
-                set docs to get every «class docu»
+                set docs to get every document
                 repeat with d in docs
                     set docPath to ""
                     try
-                        set docPath to POSIX path of ((get «property file» of d) as alias)
+                        set docPath to POSIX path of ((get «class file» of d) as alias)
                     on error
                         try
-                            set docPath to (get «property ppth» of d) as text
+                            set docPath to (get path of d) as text
                         end try
                     end try
+                    if docPath is "missing value" then set docPath to ""
                     set affected to (mode is "quitBlockingApp")
                     repeat with root in roots
                         if docPath is (root as text) or docPath starts with ((root as text) & "/") then set affected to true
                     end repeat
                     if affected then
-                        set changed to get «property imod» of d
+                        set changed to get modified of d
                         if changed then
                             if docPath is "" then
                                 set recoveredPath to recovery & "/Recovered-" & (savedCount + 1)
-                                «event coresave» d given «class kfil»: (POSIX file recoveredPath)
+                                save d in (POSIX file recoveredPath)
                             else
-                                «event coresave» d
+                                save d
                             end if
-                            if (get «property imod» of d) then error "Document remains modified after saving; closure stopped"
+                            if (get modified of d) then error "Document remains modified after saving; closure stopped"
                             set savedCount to savedCount + 1
                         end if
-                        «event coreclos» d given «class savo»: «constant enumyes »
+                        close d saving yes
                         set closedCount to closedCount + 1
                     end if
                 end repeat
                 if mode is "quitBlockingApp" then
-                    «event aevtquit» given «class savo»: «constant enumyes »
+                    quit saving yes
                 end if
             end tell
+            end using terms from
         end timeout
         return "Saved " & savedCount & "; closed " & closedCount & "; recovery folder: " & recovery
     end run

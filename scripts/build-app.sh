@@ -7,6 +7,13 @@ if [ "$(uname -s)" != Darwin ]; then
     exit 1
 fi
 
+entitlements=Resources/DiskWatchDirect.entitlements
+case "${1:-}" in
+    --sandboxed) entitlements=Resources/DiskWatch.entitlements ;;
+    '') ;;
+    *) printf '%s\n' 'Usage: build-app.sh [--sandboxed]' >&2; exit 2 ;;
+esac
+
 swift build -c release --product DiskWatch
 swift build -c release --product disk-watch
 binary_dir=$(swift build -c release --show-bin-path)
@@ -16,15 +23,10 @@ cp "$binary_dir/DiskWatch" "$app_dir/Contents/MacOS/DiskWatch"
 cp "$binary_dir/disk-watch" "$app_dir/Contents/MacOS/disk-watch"
 cp Resources/Info.plist "$app_dir/Contents/Info.plist"
 cp Resources/PrivacyInfo.xcprivacy "$app_dir/Contents/Resources/PrivacyInfo.xcprivacy"
-entitlements=Resources/DiskWatchDirect.entitlements
-case "${1:-}" in
-    --sandboxed) entitlements=Resources/DiskWatch.entitlements ;;
-    '') ;;
-    *) printf '%s\n' 'Usage: build-app.sh [--sandboxed]' >&2; exit 2 ;;
-esac
 codesign --force --sign "${DISK_WATCH_SIGNING_IDENTITY:--}" --options runtime \
     --entitlements "$entitlements" "$app_dir/Contents/MacOS/disk-watch"
 codesign --force --sign "${DISK_WATCH_SIGNING_IDENTITY:--}" \
     --options runtime --entitlements "$entitlements" "$app_dir"
+codesign --verify --strict "$app_dir/Contents/MacOS/disk-watch"
 codesign --verify --strict "$app_dir"
 printf '%s\n' "$app_dir"

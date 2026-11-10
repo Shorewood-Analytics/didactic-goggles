@@ -22,6 +22,8 @@ jobs:
         with:
           persist-credentials: false
       - name: Build and test library, background app, and CLI
+        env:
+          DISK_WATCH_AUTOMATION_TESTS: "1"
         run: swift test -Xswiftc -warnings-as-errors
       - name: Build sandboxed app bundle
         if: ${{ !cancelled() }}
@@ -32,6 +34,23 @@ jobs:
       - name: Verify capacity and APFS/exFAT ejection inside the sandbox
         if: ${{ !cancelled() }}
         run: python3 scripts/check-sandbox.py
+      - name: Build and exercise direct-distribution app bundle
+        run: |
+          sh scripts/build-app.sh
+          dist/DiskWatch.app/Contents/MacOS/DiskWatch --smoke-test
+          dist/DiskWatch.app/Contents/MacOS/DiskWatch --help
+          dist/DiskWatch.app/Contents/MacOS/disk-watch --help
+          if dist/DiskWatch.app/Contents/MacOS/DiskWatch --eject-all --diagnose; then
+            echo 'Conflicting command arguments must be rejected' >&2
+            exit 1
+          fi
+          ditto -c -k --sequesterRsrc --keepParent dist/DiskWatch.app dist/DiskWatch-macOS.zip
+      - name: Upload development app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: DiskWatch-macOS
+          path: dist/DiskWatch-macOS.zip
+          if-no-files-found: error
       - name: Exercise headless snapshot
         run: |
           swift run disk-watch --once
