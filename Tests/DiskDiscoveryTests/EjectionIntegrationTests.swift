@@ -6,6 +6,16 @@ import XCTest
 final class EjectionIntegrationTests: XCTestCase {
     @MainActor
     func testUnmountAndEjectControlledAPFSImage() async throws {
+        try await exerciseImage(filesystem: "APFS")
+    }
+
+    @MainActor
+    func testUnmountAndEjectControlledExFATImage() async throws {
+        try await exerciseImage(filesystem: "ExFAT")
+    }
+
+    @MainActor
+    private func exerciseImage(filesystem: String) async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -13,7 +23,7 @@ final class EjectionIntegrationTests: XCTestCase {
         let sourceFolder = folder.appendingPathComponent("source")
         try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
         try Data().write(to: sourceFolder.appendingPathComponent(".metadata_never_index"))
-        _ = try run("/usr/bin/hdiutil", ["create", "-srcfolder", sourceFolder.path, "-size", "128m", "-fs", "APFS", "-volname", "DiskWatchTest", path])
+        _ = try run("/usr/bin/hdiutil", ["create", "-srcfolder", sourceFolder.path, "-size", "128m", "-fs", filesystem, "-volname", "DiskWatchTest", path])
         let attach = try run("/usr/bin/hdiutil", ["attach", "-plist", "-nobrowse", path])
         let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: attach, format: nil) as? [String: Any])
         let entities = try XCTUnwrap(plist["system-entities"] as? [[String: Any]])
@@ -35,22 +45,23 @@ final class EjectionIntegrationTests: XCTestCase {
         // Let Disk Arbitration finish publishing the image's APFS volumes.
         try await Task.sleep(nanoseconds: 1_000_000_000)
         let usage = await DiskUsageReader().read([disk])
-        print("Fixture layout:", MediaLayout.read(disk))
-        print("Fixture usage:", usage[disk.id] as Any)
-        XCTAssertNotNil(usage[disk.id]?.percentUsed)
-        let results = await ejector.ejectAll([disk])
-        if !results[0].succeeded {
-            print("Ejection failure:", results[0].error ?? "unknown")
-            let command = Process()
-            command.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
-            command.arguments = ["eject", device]
-            try command.run()
-            command.waitUntilExit()
-            print("diskutil comparison exit:", command.terminationStatus)
-        }
-        XCTAssertEqual(results.count, 1)
-        XCTAssertTrue(results[0].succeeded, results[0].error ?? "")
+        XCTAssertNotNil(usage[disk.id]?.percentUsed, usage[disk.id]?.unavailableReason ?? "")
+        let mount = try XCTUnwrap(entities.compactMap { $0["mount-point"] as? String }.first)
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: mount).appendingPathComponent(".metadata_never_index"))
+        let busy = await ejector.ejectAll([disk])
+        try handle.close()
+        XCTAssertFalse(busy[0].succeeded, "An open file must prevent unmount; no force fallback")
+        XCTAssertTrue(MountedSpace.snapshot().contains { $0.path == mount })
+
+        let stale = Disk(id: UInt64.max, bsdName: "disk999999", name: "Stale", sizeBytes: 1,
+                         transport: "USB", connection: .external)
+        let results = await ejector.ejectAll([stale, disk, disk])
+        XCTAssertEqual(results.count, 2, "Batch deduplicates attachments and continues after failure")
+        XCTAssertFalse(results[0].succeeded)
+        XCTAssertTrue(results[1].succeeded, results[1].error ?? "")
         XCTAssertFalse(ejector.isEjecting)
+        XCTAssertFalse(MountedSpace.snapshot().contains { $0.path == mount })
+        XCTAssertTrue(MediaLayout.read(disk).isEmpty, "Successful eject removes the original registry attachment")
     }
 
     private func run(_ executable: String, _ arguments: [String]) throws -> Data {

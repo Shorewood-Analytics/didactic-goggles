@@ -31,7 +31,7 @@ struct SandboxProbe {
                 print("Sandbox eject failed:", results)
                 exit(6)
             }
-            print("Sandbox capacity and APFS ejection succeeded.")
+            print("Sandbox capacity and ejection succeeded.")
             finished = true
         }
         let deadline = Date().addingTimeInterval(45)
