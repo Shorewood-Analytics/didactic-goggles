@@ -24,10 +24,19 @@ final class EjectionIntegrationTests: XCTestCase {
         let sourceFolder = folder.appendingPathComponent("source")
         try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
         try Data().write(to: sourceFolder.appendingPathComponent(".metadata_never_index"))
-        let creation = filesystem == "APFS"
-            ? ["create", "-srcfolder", sourceFolder.path, "-size", "128m", "-fs", filesystem, "-volname", "DiskWatchTest", path]
-            : ["create", "-size", "512m", "-layout", "MBRSPUD", "-fs", filesystem, "-volname", "DiskWatchTest", path]
-        _ = try run("/usr/bin/hdiutil", creation)
+        if filesystem == "APFS" {
+            _ = try run("/usr/bin/hdiutil", ["create", "-srcfolder", sourceFolder.path, "-size", "128m", "-fs", filesystem, "-volname", "DiskWatchTest", path])
+        } else {
+            _ = try run("/usr/bin/hdiutil", ["create", "-size", "512m", "-layout", "NONE", path])
+            let raw = try run("/usr/bin/hdiutil", ["attach", "-nomount", "-plist", path])
+            let rawPlist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: raw, format: nil) as? [String: Any])
+            let rawEntities = try XCTUnwrap(rawPlist["system-entities"] as? [[String: Any]])
+            let rawDevice = try XCTUnwrap(rawEntities.compactMap { $0["dev-entry"] as? String }.first {
+                $0.range(of: #"^/dev/disk[0-9]+$"#, options: .regularExpression) != nil
+            })
+            defer { _ = try? run("/usr/bin/hdiutil", ["detach", rawDevice]) }
+            _ = try run("/usr/sbin/diskutil", ["eraseDisk", "ExFAT", "DiskWatchTest", "MBR", rawDevice])
+        }
         let attach = try run("/usr/bin/hdiutil", ["attach", "-plist", "-nobrowse", path])
         let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: attach, format: nil) as? [String: Any])
         let entities = try XCTUnwrap(plist["system-entities"] as? [[String: Any]])

@@ -8,7 +8,7 @@ final class AutomationScriptTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        for (index, script) in [ApplicationReleaser.finderScript, ApplicationReleaser.documentsScript].enumerated() {
+        for (index, script) in [ApplicationReleaser.finderScript, ApplicationReleaser.finderQuitScript, ApplicationReleaser.documentsScript].enumerated() {
             let source = directory.appendingPathComponent("script-\(index).applescript")
             try script.write(to: source, atomically: true, encoding: .utf8)
             let process = Process()

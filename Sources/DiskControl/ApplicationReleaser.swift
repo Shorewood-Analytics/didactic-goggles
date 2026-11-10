@@ -18,8 +18,15 @@ public final class ApplicationReleaser {
             return .init(succeeded: false, detail: "\(blocker.name) (PID \(blocker.pid)) is a background process; no save/checkpoint adapter is registered")
         }
         let roots = DiskInspection.read(disk).volumes.map(\.path)
-        if bundleID == "com.apple.finder", level == .closeDocuments {
-            let result = await ScriptRunner.run(Self.finderScript, arguments: roots)
+        if bundleID == "com.apple.finder" {
+            let source = level == .closeDocuments ? Self.finderScript : Self.finderQuitScript
+            let result = await ScriptRunner.run(source, arguments: roots)
+            if level == .quitBlockingApp, result.succeeded {
+                let deadline = Date().addingTimeInterval(10)
+                while !application.isTerminated, Date() < deadline { try? await Task.sleep(nanoseconds: 100_000_000) }
+                return .init(succeeded: application.isTerminated,
+                             detail: application.isTerminated ? "Finder exited after its windows were closed" : "Finder has not finished quitting")
+            }
             return .init(succeeded: result.succeeded, detail: result.output)
         }
         let recovery = FileManager.default.homeDirectoryForCurrentUser
@@ -84,6 +91,13 @@ public final class ApplicationReleaser {
     end run
     """#
 
+    static let finderQuitScript = #"""
+    with timeout of 30 seconds
+        tell application "Finder" to quit
+    end timeout
+    return "Requested Finder exit after targeted window closure"
+    """#
+
     // Standard document Apple events. Saving and modified-state verification
     // precede every close. Unsupported commands fail visibly; no discard command.
     static let documentsScript = #"""
@@ -97,41 +111,44 @@ public final class ApplicationReleaser {
         set closedCount to 0
         with timeout of 30 seconds
             if not (application id targetID is running) then return "Application already exited"
+            using terms from application "TextEdit"
             tell application id targetID
-                set docs to get every «class docu»
+                set docs to get every document
                 repeat with d in docs
                     set docPath to ""
                     try
-                        set docPath to POSIX path of ((get «property file» of d) as alias)
+                        set docPath to POSIX path of ((get «class file» of d) as alias)
                     on error
                         try
-                            set docPath to (get «property ppth» of d) as text
+                            set docPath to (get path of d) as text
                         end try
                     end try
+                    if docPath is "missing value" then set docPath to ""
                     set affected to (mode is "quitBlockingApp")
                     repeat with root in roots
                         if docPath is (root as text) or docPath starts with ((root as text) & "/") then set affected to true
                     end repeat
                     if affected then
-                        set changed to get «property imod» of d
+                        set changed to get modified of d
                         if changed then
                             if docPath is "" then
                                 set recoveredPath to recovery & "/Recovered-" & (savedCount + 1)
-                                «event coresave» d given «class kfil»: (POSIX file recoveredPath)
+                                save d in (POSIX file recoveredPath)
                             else
-                                «event coresave» d
+                                save d
                             end if
-                            if (get «property imod» of d) then error "Document remains modified after saving; closure stopped"
+                            if (get modified of d) then error "Document remains modified after saving; closure stopped"
                             set savedCount to savedCount + 1
                         end if
-                        «event coreclos» d given «class savo»: «constant enumyes »
+                        close d saving yes
                         set closedCount to closedCount + 1
                     end if
                 end repeat
                 if mode is "quitBlockingApp" then
-                    «event aevtquit» given «class savo»: «constant enumyes »
+                    quit saving yes
                 end if
             end tell
+            end using terms from
         end timeout
         return "Saved " & savedCount & "; closed " & closedCount & "; recovery folder: " & recovery
     end run

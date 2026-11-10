@@ -22,6 +22,8 @@ jobs:
         with:
           persist-credentials: false
       - name: Build and test library, background app, and CLI
+        env:
+          DISK_WATCH_AUTOMATION_TESTS: "1"
         run: swift test -Xswiftc -warnings-as-errors
       - name: Build sandboxed app bundle
         if: ${{ !cancelled() }}

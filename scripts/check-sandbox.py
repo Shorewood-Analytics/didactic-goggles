@@ -31,7 +31,14 @@ for filesystem in ("APFS", "ExFAT"):
         if filesystem == "APFS":
             run("hdiutil", "create", "-srcfolder", str(source), "-size", "128m", "-fs", filesystem, "-volname", "SandboxProbe", path)
         else:
-            run("hdiutil", "create", "-size", "512m", "-layout", "MBRSPUD", "-fs", filesystem, "-volname", "SandboxProbe", path)
+            run("hdiutil", "create", "-size", "512m", "-layout", "NONE", path)
+            raw = plistlib.loads(run("hdiutil", "attach", "-nomount", "-plist", path))
+            raw_device = next(item["dev-entry"] for item in raw["system-entities"]
+                              if re.fullmatch(r"/dev/disk\d+", item.get("dev-entry", "")))
+            try:
+                run("diskutil", "eraseDisk", "ExFAT", "SandboxProbe", "MBR", raw_device)
+            finally:
+                run("hdiutil", "detach", raw_device)
         attached = plistlib.loads(run("hdiutil", "attach", "-plist", "-nobrowse", path))
         device = next(item["dev-entry"] for item in attached["system-entities"]
                       if re.fullmatch(r"/dev/disk\d+", item.get("dev-entry", "")))
