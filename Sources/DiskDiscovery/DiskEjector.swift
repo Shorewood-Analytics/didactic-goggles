@@ -35,7 +35,7 @@ public final class DiskEjector {
     public private(set) var isEjecting = false
     private let eligibleDisks: () throws -> [Disk]
     public convenience init() { self.init(eligibleDisks: { try IOKitDiskSource().snapshot() }) }
-    init(eligibleDisks: @escaping () throws -> [Disk]) { self.eligibleDisks = eligibleDisks }
+    package init(eligibleDisks: @escaping () throws -> [Disk]) { self.eligibleDisks = eligibleDisks }
 
     public func ejectAll(_ disks: [Disk], progress: (Int, Int) -> Void = { _, _ in }) async -> [EjectionResult] {
         guard !isEjecting else {
@@ -69,14 +69,32 @@ public final class DiskEjector {
                 results.append(EjectionResult(disk: disk, error: "Disk identity changed; ejection skipped."))
                 continue
             }
-            // Whole-disk unmount covers every mounted partition. Busy volumes
-            // produce a visible error; no file handles are closed forcibly.
-            let unmountError = await withCheckedContinuation { continuation in
-                let context = Unmanaged.passRetained(ArbitrationReply(continuation)).toOpaque()
-                DADiskUnmount(native, DADiskUnmountOptions(kDADiskUnmountOptionWhole), arbitrationCallback, context)
+            let layout = MediaLayout.read(disk)
+            let systemMounts = MountedSpace.snapshot().filter { $0.path == "/" || $0.path == "/System/Volumes/Data" }
+            guard !layout.isEmpty, !layout.contains(where: \.ambiguous),
+                  !systemMounts.contains(where: { mount in layout.contains {
+                      mount.bsdName == $0.bsdName || mount.bsdName.hasPrefix($0.bsdName + "s")
+                  } }) else {
+                results.append(EjectionResult(disk: disk, error: "System disk or ambiguous storage layout; ejection skipped."))
+                continue
             }
-            if let unmountError, unmountError.code != kDAReturnNotMounted {
-                results.append(EjectionResult(disk: disk, error: "Unmount failed: \(unmountError.message)"))
+            // APFS synthesized containers are separate whole media. Unmount
+            // their volumes first, then the physical disk's ordinary partitions.
+            var unmountFailure: String?
+            for branch in layout.filter(\.whole).sorted(by: { $0.depth > $1.depth }) {
+                let service = IOServiceGetMatchingService(kIOMainPortDefault, IORegistryEntryIDMatching(branch.id))
+                guard service != 0 else { unmountFailure = "Disk disconnected during unmount."; break }
+                let target = DADiskCreateFromIOMedia(kCFAllocatorDefault, session, service)
+                IOObjectRelease(service)
+                guard let target else { unmountFailure = "Volume information is unavailable."; break }
+                let error = await withCheckedContinuation { continuation in
+                    let context = Unmanaged.passRetained(ArbitrationReply(continuation)).toOpaque()
+                    DADiskUnmount(target, DADiskUnmountOptions(kDADiskUnmountOptionWhole), arbitrationCallback, context)
+                }
+                if let error, error.code != kDAReturnNotMounted { unmountFailure = error.message; break }
+            }
+            if let unmountFailure {
+                results.append(EjectionResult(disk: disk, error: "Unmount failed: \(unmountFailure)"))
                 continue
             }
             guard let current = try? eligibleDisks(),

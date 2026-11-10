@@ -42,7 +42,7 @@ func capturePreviews() {
 
 @MainActor
 private func capture<V: View>(_ view: V, size: NSSize, to url: URL) throws {
-    let hosting = NSHostingView(rootView: view)
+    let hosting = NSHostingView(rootView: view.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color(nsColor: .windowBackgroundColor)))
     let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                           styleMask: [.borderless], backing: .buffered, defer: false)
     window.contentView = hosting

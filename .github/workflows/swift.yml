@@ -28,6 +28,9 @@ jobs:
       - name: Exercise sandboxed IOKit startup
         if: ${{ !cancelled() }}
         run: dist/DiskWatch.app/Contents/MacOS/DiskWatch --smoke-test
+      - name: Verify capacity and APFS ejection inside the sandbox
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check-sandbox.py
       - name: Exercise headless snapshot
         run: swift run disk-watch --once
       - name: Verify continuous background operation and shutdown

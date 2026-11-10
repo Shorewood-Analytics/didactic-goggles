@@ -34,6 +34,10 @@ final class EjectionIntegrationTests: XCTestCase {
         let ejector = DiskEjector(eligibleDisks: { [disk] })
         // Let Disk Arbitration finish publishing the image's APFS volumes.
         try await Task.sleep(nanoseconds: 1_000_000_000)
+        let usage = await DiskUsageReader().read([disk])
+        print("Fixture layout:", MediaLayout.read(disk))
+        print("Fixture usage:", usage[disk.id] as Any)
+        XCTAssertNotNil(usage[disk.id]?.percentUsed)
         let results = await ejector.ejectAll([disk])
         if !results[0].succeeded {
             print("Ejection failure:", results[0].error ?? "unknown")

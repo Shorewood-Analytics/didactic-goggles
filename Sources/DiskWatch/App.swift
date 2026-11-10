@@ -13,22 +13,6 @@ struct DiskWatchApp {
             do {
                 try monitor.start()
                 RunLoop.main.run(until: Date().addingTimeInterval(0.25))
-                var capacityCheckDone = false
-                Task {
-                    let probe = Disk(id: UInt64.max, bsdName: "disk999999", name: "Read-only probe",
-                                     sizeBytes: 1, transport: "USB", connection: .external)
-                    let values = await DiskUsageReader().read([probe])
-                    if values[probe.id]?.unavailableReason?.hasPrefix("Usage not available:") == true {
-                        fputs("Sandboxed capacity query failed.\n", stderr)
-                        exit(EXIT_FAILURE)
-                    }
-                    capacityCheckDone = true
-                }
-                let deadline = Date().addingTimeInterval(20)
-                while !capacityCheckDone && Date() < deadline {
-                    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-                }
-                guard capacityCheckDone else { exit(EXIT_FAILURE) }
                 monitor.stop()
                 print("Sandboxed IOKit monitor started and stopped.")
             } catch {

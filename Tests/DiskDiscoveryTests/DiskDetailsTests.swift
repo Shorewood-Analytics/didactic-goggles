@@ -22,56 +22,44 @@ final class DiskDetailsTests: XCTestCase {
         XCTAssertEqual(LinkDecoder.port(["Controller Characteristics": ["Port Speed": "Automatic (6 Gigabit)"]])?.value,
                        "Automatic (6 Gigabit)")
     }
-    private func list(_ parts: [[String: Any]]) -> [String: Any] {
-        ["AllDisksAndPartitions": [["DeviceIdentifier": "disk4", "Partitions": parts]]]
+    private func leaf(_ id: UInt64, _ name: String, parent: UInt64 = 1, content: String = "", ambiguous: Bool = false) -> MediaNode {
+        MediaNode(id: id, bsdName: name, whole: false, leaf: true, content: content,
+                  wholeAncestor: parent, depth: 10, ambiguous: ambiguous)
+    }
+    private func space(_ name: String, total: UInt64, free: UInt64, fs: String = "apfs") -> MountedSpace {
+        MountedSpace(bsdName: name, path: "/Volumes/Test", filesystem: fs, total: total, free: free)
     }
     func testAPFSCountsSharedPoolOnlyOnce() {
-        let parts: [[String: Any]] = [
-            ["DeviceIdentifier": "disk4s1", "Content": "Apple_APFS"],
-            ["DeviceIdentifier": "disk4s2", "Content": "Apple_APFS"]
-        ]
-        let apfs: [String: Any] = ["Containers": [[
-            "ContainerReference": "disk6", "PhysicalStores": parts,
-            "CapacityCeiling": 1000, "CapacityFree": 400,
-            "Volumes": [["CapacityInUse": 200], ["CapacityInUse": 400]]
-        ]]]
-        let usage = UsageResolver.resolve(disk: "disk4", list: list(parts), apfs: apfs, info: [:])
+        let nodes = [leaf(3, "disk6s1", parent: 2), leaf(4, "disk6s2", parent: 2)]
+        let usage = UsageResolver.resolve(root: 1, nodes: nodes, mounted: [
+            space("disk6s1", total: 1000, free: 400), space("disk6s2", total: 1000, free: 400)
+        ])
         XCTAssertEqual(usage.totalBytes, 1000)
         XCTAssertEqual(usage.usedBytes, 600)
         XCTAssertEqual(usage.percentUsed, 60)
     }
-    func testAPFSAcrossPhysicalDisksCannotBeAttributedToOneDisk() {
-        let part: [String: Any] = ["DeviceIdentifier": "disk4s1", "Content": "Apple_APFS"]
-        let apfs: [String: Any] = ["Containers": [[
-            "ContainerReference": "disk6", "PhysicalStores": [part, ["DeviceIdentifier": "disk40s1"]],
-            "CapacityCeiling": 1000, "CapacityFree": 400
-        ]]]
-        let usage = UsageResolver.resolve(disk: "disk4", list: list([part]), apfs: apfs, info: [:])
-        XCTAssertNil(usage.percentUsed)
-        XCTAssertEqual(usage.unavailableReason, "APFS storage spans multiple disks")
+    func testAmbiguousTopologyAndInconsistentAPFSCountersAreUnavailable() {
+        XCTAssertNil(UsageResolver.resolve(root: 1, nodes: [leaf(2, "disk6s1", ambiguous: true)],
+                                          mounted: [space("disk6s1", total: 1000, free: 400)]).percentUsed)
+        let nodes = [leaf(3, "disk6s1", parent: 2), leaf(4, "disk6s2", parent: 2)]
+        XCTAssertNil(UsageResolver.resolve(root: 1, nodes: nodes, mounted: [
+            space("disk6s1", total: 1000, free: 400), space("disk6s2", total: 500, free: 100)
+        ]).percentUsed)
     }
     func testMixedPartitionsSumAndUnknownPartitionMakesUsageIncomplete() {
-        let parts: [[String: Any]] = [
-            ["DeviceIdentifier": "disk4s1", "Content": "EFI"],
-            ["DeviceIdentifier": "disk4s2", "Content": "Microsoft Basic Data"],
-            ["DeviceIdentifier": "disk4s3", "Content": "Apple_HFS"]
-        ]
-        let info: [String: [String: Any]] = [
-            "disk4s2": ["VolumeTotalSpace": 100, "VolumeFreeSpace": 10],
-            "disk4s3": ["VolumeTotalSpace": 900, "VolumeFreeSpace": 90]
-        ]
-        let usage = UsageResolver.resolve(disk: "disk4", list: list(parts), apfs: nil, info: info)
-        XCTAssertEqual(usage.percentUsed, 90)
-        XCTAssertNil(UsageResolver.resolve(disk: "disk4", list: list(parts), apfs: nil,
-                                          info: ["disk4s2": info["disk4s2"]!]).percentUsed)
+        let nodes = [leaf(2, "disk4s1", content: "EFI"), leaf(3, "disk4s2"), leaf(4, "disk4s3")]
+        let mounted = [space("disk4s2", total: 100, free: 10, fs: "exfat"),
+                       space("disk4s3", total: 900, free: 90, fs: "hfs")]
+        XCTAssertEqual(UsageResolver.resolve(root: 1, nodes: nodes, mounted: mounted).percentUsed, 90)
+        XCTAssertNil(UsageResolver.resolve(root: 1, nodes: nodes, mounted: [mounted[0]]).percentUsed)
+        // A similarly named disk cannot supply a missing volume's counters.
+        XCTAssertNil(UsageResolver.resolve(root: 1, nodes: nodes,
+                                          mounted: [space("disk40s2", total: 100, free: 10)]).percentUsed)
     }
     func testInvalidCountersDoNotProducePercentages() {
-        let parts: [[String: Any]] = [["DeviceIdentifier": "disk4s1", "Content": "Apple_HFS"]]
-        for info in [["VolumeTotalSpace": 100, "VolumeFreeSpace": 101],
-                     ["VolumeTotalSpace": 100, "VolumeFreeSpace": -1],
-                     ["VolumeTotalSpace": 0, "VolumeFreeSpace": 0]] {
-            XCTAssertNil(UsageResolver.resolve(disk: "disk4", list: list(parts), apfs: nil,
-                                              info: ["disk4s1": info]).percentUsed)
+        let nodes = [leaf(2, "disk4s1")]
+        for mounted in [space("disk4s1", total: 100, free: 101), space("disk4s1", total: 0, free: 0)] {
+            XCTAssertNil(UsageResolver.resolve(root: 1, nodes: nodes, mounted: [mounted]).percentUsed)
         }
     }
     @MainActor
@@ -84,10 +72,9 @@ final class DiskDetailsTests: XCTestCase {
         XCTAssertFalse(results[0].succeeded)
         XCTAssertFalse(ejector.isEjecting)
     }
-    func testActualDiskutilPlistsAreReadable() throws {
-        let list = try Diskutil.read(["list", "-plist", "physical"])
-        XCTAssertNotNil(list["AllDisksAndPartitions"])
-        let apfs = try Diskutil.read(["apfs", "list", "-plist"])
-        XCTAssertNotNil(apfs["Containers"])
+    func testNativeMountedFilesystemCountersAreReadable() {
+        let mounted = MountedSpace.snapshot()
+        XCTAssertFalse(mounted.isEmpty)
+        XCTAssertTrue(mounted.contains { $0.path == "/" && $0.total > 0 && $0.free <= $0.total })
     }
 }
