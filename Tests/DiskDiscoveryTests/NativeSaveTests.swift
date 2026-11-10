@@ -86,8 +86,19 @@ final class NativeSaveTests: XCTestCase {
         let recovery = directory.appendingPathComponent("recovery", isDirectory: true)
         try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
         let root = volume.resolvingSymlinksInPath().path
+        let pathDiagnostics = await ScriptRunner.run(#"""
+        tell application "TextEdit"
+            set report to {}
+            repeat with d in (get every document)
+                set end of report to ((name of d) as text) & ": " & ((path of d) as text)
+            end repeat
+            return report
+        end tell
+        """#, arguments: [])
+        print("Native save root:", root, "document paths:", pathDiagnostics.output)
         let targeted = await ScriptRunner.run(ApplicationReleaser.documentsScript,
             arguments: ["com.apple.TextEdit", "closeDocuments", recovery.path, root])
+        print("Targeted native save result:", targeted.output)
         XCTAssertTrue(targeted.succeeded, targeted.output)
         guard targeted.succeeded else { return }
         XCTAssertFalse(application.isTerminated, "Targeted document closure must leave the app running")
@@ -97,6 +108,7 @@ final class NativeSaveTests: XCTestCase {
         XCTAssertEqual(remaining.output, "2", "The unrelated and untitled documents must remain open")
         let result = await ScriptRunner.run(ApplicationReleaser.documentsScript,
             arguments: ["com.apple.TextEdit", "quitBlockingApp", recovery.path, root])
+        print("Native quit/recovery result:", result.output)
         XCTAssertTrue(result.succeeded, result.output)
         guard result.succeeded else { return }
         let deadline = Date().addingTimeInterval(10)

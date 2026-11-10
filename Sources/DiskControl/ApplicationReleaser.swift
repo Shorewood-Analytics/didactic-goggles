@@ -108,12 +108,28 @@ public final class ApplicationReleaser {
     // terminology can launch that application merely to compile this script.
     // Codes: developer.apple.com/library/archive/samplecode/Sketch/Listings/Sketch_sdef.html
     static let documentsScript = #"""
+    use framework "Foundation"
+    use scripting additions
+
+    on canonicalPath(p)
+        set pathString to current application's NSString's stringWithString:(p as text)
+        return (pathString's stringByResolvingSymlinksInPath()) as text
+    end canonicalPath
+
+    on destinationFile(p)
+        return POSIX file p
+    end destinationFile
+
     on run argv
         set targetID to item 1 of argv
         set mode to item 2 of argv
-        set recovery to item 3 of argv
+        set recovery to my canonicalPath(item 3 of argv)
         set roots to {}
-        if (count argv) > 3 then set roots to items 4 thru -1 of argv
+        if (count argv) > 3 then
+            repeat with p in items 4 thru -1 of argv
+                set end of roots to my canonicalPath(p as text)
+            end repeat
+        end if
         set savedCount to 0
         set closedCount to 0
         with timeout of 30 seconds
@@ -130,11 +146,7 @@ public final class ApplicationReleaser {
                         end try
                     end try
                     if docPath is "missing value" then set docPath to ""
-                    if docPath is not "" then
-                        try
-                            set docPath to POSIX path of ((POSIX file docPath) as alias)
-                        end try
-                    end if
+                    if docPath is not "" then set docPath to my canonicalPath(docPath)
                     set affected to (mode is "quitBlockingApp")
                     considering case
                         repeat with root in roots
@@ -146,7 +158,11 @@ public final class ApplicationReleaser {
                         if changed or docPath is "" then
                             if docPath is "" then
                                 set recoveredPath to recovery & "/Recovered-" & (savedCount + 1)
-                                «event coresave» d given «class kfil»: (POSIX file recoveredPath)
+                                -- Give TextEdit's recovered rich text an explicit
+                                -- format extension in the destination file reference.
+                                if targetID is "com.apple.TextEdit" then set recoveredPath to recoveredPath & ".rtf"
+                                set recoveredFile to my destinationFile(recoveredPath)
+                                «event coresave» d given «class kfil»: recoveredFile
                             else
                                 «event coresave» d
                             end if
