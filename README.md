@@ -93,7 +93,10 @@ dist/DiskWatch.app/Contents/MacOS/DiskWatch --smoke-test
 
 Tests cover selection policy, initial discovery, add/remove reconciliation,
 duplicate notifications, restart, stale callbacks, error recovery, and native
-notification setup/teardown. CI also runs the sandboxed executable. Synthetic
+notification setup/teardown. An integration test uses a temporary 1 MiB RAM disk
+to exercise real arrival/removal callbacks and virtual-media exclusion. CI also
+runs the sandboxed executable and verifies the headless process stays alive until
+SIGTERM/SIGINT, then shuts down cleanly. Synthetic
 fixtures and CI startup checks do not establish real hardware coverage.
 
 Before accepting a build on a Mac, verify:

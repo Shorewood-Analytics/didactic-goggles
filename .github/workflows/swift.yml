@@ -2,7 +2,7 @@ name: Swift
 
 on:
   push:
-    branches: [main, 'codex/**']
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -28,3 +28,5 @@ jobs:
         run: dist/DiskWatch.app/Contents/MacOS/DiskWatch --smoke-test
       - name: Exercise headless snapshot
         run: swift run disk-watch --once
+      - name: Verify continuous background operation and shutdown
+        run: python3 scripts/check-background.py
