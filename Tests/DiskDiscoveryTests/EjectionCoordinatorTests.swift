@@ -77,4 +77,67 @@ final class EjectionCoordinatorTests: XCTestCase {
         let falseResult = await falseSuccess.ejectAll([disk])
         XCTAssertFalse(falseResult[0].succeeded)
     }
+
+    @MainActor
+    func testNewHolderCannotSkipDocumentReleaseAndGoStraightToQuit() async {
+        let original = blocker
+        let newcomer = DiskBlocker(pid: 200, startedAt: "456", name: "New Editor",
+                                  executable: "/NewEditor", paths: ["/Volumes/Fixture"])
+        var releasedOriginal = false
+        var released: [String] = []
+        let coordinator = EjectionCoordinator(eject: { _ in .init(error: "busy", isBusy: true) }, inspect: { _ in
+            .init(blockers: releasedOriginal ? [newcomer] : [original])
+        }, release: { _, holder, level in
+            released.append(holder.id)
+            XCTAssertEqual(level, .closeDocuments)
+            releasedOriginal = true
+            return .init(succeeded: true, detail: "closed")
+        }, verify: { _ in false })
+        let results = await coordinator.ejectAll([disk])
+        XCTAssertFalse(results[0].succeeded)
+        XCTAssertEqual(released, [original.id])
+    }
+
+    @MainActor
+    func testCancellationDuringInspectionPreventsDocumentReleaseAndFurtherEjection() async {
+        let blocker = blocker
+        var attempts = 0
+        let coordinator = EjectionCoordinator(eject: { _ in
+            attempts += 1
+            return .init(error: "busy", isBusy: true)
+        }, inspect: { _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return .init(blockers: [blocker])
+        }, release: { _, _, _ in
+            XCTFail("Cancellation must prevent closing documents")
+            return .init(succeeded: true, detail: "unexpected")
+        }, verify: { _ in false })
+        let disk = disk
+        // Isolate cancellation from the XCTest task.
+        let results = await Task { await coordinator.ejectAll([disk]) }.value
+        XCTAssertEqual(attempts, 1)
+        XCTAssertEqual(results[0].error, "Ejection cancelled")
+        XCTAssertFalse(coordinator.isRunning)
+    }
+
+    @MainActor
+    func testFreshHolderDetailsArePassedToRelease() async {
+        let original = blocker
+        let updated = DiskBlocker(pid: original.pid, startedAt: original.startedAt, name: original.name,
+                                  executable: original.executable, paths: ["/Volumes/Fixture/current.txt"])
+        var inspections = 0
+        var released = false
+        let coordinator = EjectionCoordinator(eject: { _ in
+            .init(error: released ? nil : "busy", isBusy: !released)
+        }, inspect: { _ in
+            inspections += 1
+            return .init(blockers: [inspections == 1 ? original : updated])
+        }, release: { _, holder, _ in
+            XCTAssertEqual(holder.paths, updated.paths)
+            released = true
+            return .init(succeeded: true, detail: "closed")
+        }, verify: { _ in true })
+        let results = await coordinator.ejectAll([disk])
+        XCTAssertTrue(results[0].succeeded)
+    }
 }

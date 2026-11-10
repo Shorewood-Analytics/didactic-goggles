@@ -5,6 +5,7 @@ import DiskDiscovery
 
 @MainActor
 public final class ApplicationReleaser {
+    private let inspector = ProcessBlockerInspector()
     public init() {}
 
     public func release(_ disk: Disk, blocker: DiskBlocker, level: ReleaseLevel) async -> ReleaseOutcome {
@@ -13,12 +14,30 @@ public final class ApplicationReleaser {
               current.executable == blocker.executable else {
             return .init(succeeded: false, detail: "Process exited, changed identity, or belongs to Disk Watch")
         }
-        guard let application = Self.owningApplication(blocker.pid),
-              let bundleID = application.bundleIdentifier else {
+        // A shell/helper's parent is not necessarily its owning application.
+        // Never close Terminal or an unrelated ancestor to release a child process.
+        guard let application = NSRunningApplication(processIdentifier: blocker.pid),
+              application.activationPolicy == .regular || application.bundleIdentifier == "com.apple.finder",
+              let bundleID = application.bundleIdentifier,
+              application.executableURL?.path == blocker.executable,
+              NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).count == 1 else {
             return .init(succeeded: false, detail: "\(blocker.name) (PID \(blocker.pid)) is a background process; no save/checkpoint adapter is registered")
         }
-        let roots = DiskInspection.read(disk).volumes.map(\.path)
-        if bundleID == "com.apple.finder", level == .closeDocuments {
+        let inspection = DiskInspection.read(disk)
+        let roots = inspection.volumes.map(\.path)
+        guard inspection.presence == .present, !roots.isEmpty,
+              !roots.contains("/"), !roots.contains("/System/Volumes/Data") else {
+            return .init(succeeded: false, detail: "Disk is no longer mounted or its identity cannot be safely confirmed")
+        }
+        let fresh = await inspector.inspect(disk)
+        guard !Task.isCancelled, !application.isTerminated,
+              fresh.blockers.contains(where: { $0.id == blocker.id && $0.executable == blocker.executable }) else {
+            return .init(succeeded: false, detail: "Process no longer holds this disk, or ejection was cancelled")
+        }
+        if bundleID == "com.apple.finder" {
+            guard level == .closeDocuments else {
+                return .init(succeeded: false, detail: "Finder still holds the disk; its other windows will not be closed")
+            }
             let result = await ScriptRunner.run(Self.finderScript, arguments: roots)
             return .init(succeeded: result.succeeded, detail: result.output)
         }
@@ -40,24 +59,6 @@ public final class ApplicationReleaser {
             }
         }
         return .init(succeeded: true, detail: result.output)
-    }
-
-    private static func owningApplication(_ originalPID: Int32) -> NSRunningApplication? {
-        var pid = originalPID
-        var seen: Set<Int32> = []
-        var fallback: NSRunningApplication?
-        while pid > 1, seen.insert(pid).inserted, seen.count < 16 {
-            var info = proc_bsdinfo()
-            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
-            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size,
-                  info.pbi_uid == geteuid() else { return fallback }
-            if let app = NSRunningApplication(processIdentifier: pid) {
-                if app.activationPolicy == .regular || app.bundleIdentifier == "com.apple.finder" { return app }
-                fallback = fallback ?? app
-            }
-            pid = Int32(info.pbi_ppid)
-        }
-        return fallback
     }
 
     // Finder has no editable documents: close only windows on the affected disk.

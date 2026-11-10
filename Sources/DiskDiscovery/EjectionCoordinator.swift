@@ -82,14 +82,19 @@ public final class EjectionCoordinator {
     }
 
     public func ejectAll(_ disks: [Disk], progress: (EjectionEvent) -> Void = { _ in }) async -> [CoordinatedEjectionResult] {
+        var seen: Set<UInt64> = []
+        let targets = disks.filter { seen.insert($0.id).inserted }
         guard !isRunning, begin() else {
-            return disks.map { .init(disk: $0, succeeded: false, error: "Ejection already in progress", diagnosis: nil, events: []) }
+            return targets.map { .init(disk: $0, succeeded: false, error: "Ejection already in progress", diagnosis: nil, events: []) }
         }
         isRunning = true
         defer { isRunning = false; end() }
-        var seen: Set<UInt64> = []
         var results: [CoordinatedEjectionResult] = []
-        for disk in disks where seen.insert(disk.id).inserted {
+        for disk in targets {
+            guard !Task.isCancelled else {
+                results.append(.init(disk: disk, succeeded: false, error: "Ejection cancelled", diagnosis: nil, events: []))
+                continue
+            }
             var events: [EjectionEvent] = []
             func record(_ stage: String, _ detail: String) {
                 let event = EjectionEvent(diskID: disk.id, stage: stage, detail: detail)
@@ -100,6 +105,7 @@ public final class EjectionCoordinator {
             var error = attempt.error
             var diagnosis: BlockerReport?
             var saveFailures: Set<String> = []
+            var mayQuit: Set<String> = []
             // Always try normal ejection first. Each escalation is scoped to
             // freshly confirmed holders of this exact disk, never all apps.
             for level in [ReleaseLevel.closeDocuments, .quitBlockingApp] where error != nil && attempt.isBusy {
@@ -110,15 +116,24 @@ public final class EjectionCoordinator {
                 if report.blockers.isEmpty { break }
                 var changed = false
                 for blocker in report.blockers {
-                    guard !saveFailures.contains(blocker.id) else { continue }
+                    guard !Task.isCancelled else { error = "Ejection cancelled"; break }
+                    guard !saveFailures.contains(blocker.id),
+                          level != .quitBlockingApp || mayQuit.contains(blocker.id) else { continue }
                     // Recheck immediately before saving/closing: a former holder
                     // must not be closed after it has released the disk.
                     let fresh = await inspect(disk)
-                    guard fresh.blockers.contains(where: { $0.id == blocker.id }) else { continue }
-                    record(level.rawValue, "\(blocker.name) (PID \(blocker.pid))")
-                    let outcome = await release(disk, blocker, level)
+                    guard !Task.isCancelled else { error = "Ejection cancelled"; break }
+                    guard let current = fresh.blockers.first(where: {
+                        $0.id == blocker.id && $0.executable == blocker.executable
+                    }) else { continue }
+                    record(level.rawValue, "\(current.name) (PID \(current.pid))")
+                    let outcome = await release(disk, current, level)
                     record(outcome.succeeded ? "released" : "releaseFailed", outcome.detail)
                     if !outcome.succeeded && !outcome.mayEscalate { saveFailures.insert(blocker.id) }
+                    if level == .closeDocuments && (outcome.succeeded || outcome.mayEscalate) {
+                        mayQuit.insert(blocker.id)
+                    }
+                    guard !Task.isCancelled else { error = "Ejection cancelled"; break }
                     changed = changed || outcome.succeeded
                     // Reattempt after each action. Stop touching applications as
                     // soon as the disk can eject.
@@ -132,7 +147,7 @@ public final class EjectionCoordinator {
                 record("verify", "Checking that the original disk attachment disappeared")
                 if !(await verify(disk)) { error = "macOS accepted ejection, but the disk is still present" }
             }
-            if error != nil { diagnosis = await inspect(disk) }
+            if error != nil, !Task.isCancelled { diagnosis = await inspect(disk) }
             record(error == nil ? "complete" : "blocked", error ?? "Safely ejected")
             results.append(.init(disk: disk, succeeded: error == nil, error: error, diagnosis: diagnosis, events: events))
         }

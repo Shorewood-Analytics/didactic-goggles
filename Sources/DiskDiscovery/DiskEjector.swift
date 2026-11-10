@@ -60,6 +60,10 @@ public final class DiskEjector {
         let targets = disks.filter { seen.insert($0.id).inserted }
         for (index, disk) in targets.enumerated() {
             progress(index + 1, targets.count)
+            guard !Task.isCancelled else {
+                results.append(EjectionResult(disk: disk, error: "Ejection cancelled."))
+                continue
+            }
             guard let current = try? eligibleDisks(),
                   current.contains(where: { $0.id == disk.id && $0.bsdName == disk.bsdName }) else {
                 results.append(EjectionResult(disk: disk, error: "Disk is no longer an eligible external disk or SD card."))
@@ -90,6 +94,7 @@ public final class DiskEjector {
             var unmountFailure: String?
             var unmountCode: Int32?
             for branch in layout.filter(\.whole).sorted(by: { $0.depth > $1.depth }) {
+                guard !Task.isCancelled else { unmountFailure = "Ejection cancelled."; break }
                 let service = IOServiceGetMatchingService(kIOMainPortDefault, IORegistryEntryIDMatching(branch.id))
                 guard service != 0 else { unmountFailure = "Disk disconnected during unmount."; break }
                 let target = DADiskCreateFromIOMedia(kCFAllocatorDefault, session, service)
@@ -110,6 +115,10 @@ public final class DiskEjector {
             guard let current = try? eligibleDisks(),
                   current.contains(where: { $0.id == disk.id && $0.bsdName == disk.bsdName }) else {
                 results.append(EjectionResult(disk: disk, error: "Disk disconnected during unmount; eject skipped."))
+                continue
+            }
+            guard !Task.isCancelled else {
+                results.append(EjectionResult(disk: disk, error: "Ejection cancelled after unmount."))
                 continue
             }
             let ejectError = await withCheckedContinuation { continuation in

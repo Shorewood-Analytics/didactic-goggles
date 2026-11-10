@@ -17,7 +17,7 @@ public final class ProcessBlockerInspector: @unchecked Sendable {
         var info = proc_bsdinfo()
         guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size))
                 == Int32(MemoryLayout<proc_bsdinfo>.size) else { return nil }
-        var executable = [CChar](repeating: 0, count: Int(PROC_PIDPATHINFO_MAXSIZE))
+        var executable = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
         guard proc_pidpath(pid, &executable, UInt32(executable.count)) > 0 else { return nil }
         let path = String(cString: executable)
         return DiskBlocker(pid: pid, startedAt: "\(info.pbi_start_tvsec).\(info.pbi_start_tvusec)",
