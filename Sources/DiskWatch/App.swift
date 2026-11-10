@@ -1,6 +1,7 @@
 import AppKit
 import DiskDiscovery
 import ServiceManagement
+import SwiftUI
 
 @main
 struct DiskWatchApp {
@@ -12,12 +13,32 @@ struct DiskWatchApp {
             do {
                 try monitor.start()
                 RunLoop.main.run(until: Date().addingTimeInterval(0.25))
+                var capacityCheckDone = false
+                Task {
+                    let probe = Disk(id: UInt64.max, bsdName: "disk999999", name: "Read-only probe",
+                                     sizeBytes: 1, transport: "USB", connection: .external)
+                    let values = await DiskUsageReader().read([probe])
+                    if values[probe.id]?.unavailableReason?.hasPrefix("Usage not available:") == true {
+                        fputs("Sandboxed capacity query failed.\n", stderr)
+                        exit(EXIT_FAILURE)
+                    }
+                    capacityCheckDone = true
+                }
+                let deadline = Date().addingTimeInterval(20)
+                while !capacityCheckDone && Date() < deadline {
+                    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                }
+                guard capacityCheckDone else { exit(EXIT_FAILURE) }
                 monitor.stop()
                 print("Sandboxed IOKit monitor started and stopped.")
             } catch {
                 fputs("\(error.localizedDescription)\n", stderr)
                 exit(EXIT_FAILURE)
             }
+            return
+        }
+        if CommandLine.arguments.contains("--capture-previews") {
+            capturePreviews()
             return
         }
         let app = NSApplication.shared
@@ -29,26 +50,55 @@ struct DiskWatchApp {
 }
 
 @MainActor
-private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     private let monitor = DiskMonitor()
     private var statusItem: NSStatusItem?
     private var loginError: String?
+    private let windowModel = DiskWindowModel()
+    private let usageReader = DiskUsageReader()
+    private let ejector = DiskEjector()
+    private var diskWindow: NSWindow?
+    private var usageTask: Task<Void, Never>?
+    private var usageTimer: Timer?
+    private var pendingRefresh = false
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showDisks()
+        return true
+    }
+
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "externaldrive", accessibilityDescription: "Disk Watch")
         item.button?.imagePosition = .imageLeading
         statusItem = item
-        monitor.onChange = { [weak self] in self?.render() }
+        monitor.onChange = { [weak self] in
+            guard let self else { return }
+            self.windowModel.disks = self.monitor.disks
+            self.windowModel.message = self.monitor.lastError
+            self.render()
+            self.resizeWindow()
+            self.updateUsage()
+        }
+        windowModel.refresh = { [weak self] in self?.refreshDetails() }
+        windowModel.ejectAll = { [weak self] in self?.ejectAll() }
+        usageTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshDetails() }
+        }
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(didWake),
             name: NSWorkspace.didWakeNotification, object: nil
         )
         startMonitoring()
+        showDisks()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+        usageTimer?.invalidate()
+        usageTask?.cancel()
         monitor.onChange = nil
         monitor.stop()
     }
@@ -70,6 +120,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     private func populate(_ menu: NSMenu) {
         menu.removeAllItems()
+        action("Show Disks…", #selector(showDisks), in: menu)
+        menu.addItem(.separator())
         label(monitor.isRunning ? "Watching disks in the background" : "Monitoring stopped", in: menu)
         if let error = monitor.lastError {
             label("\(error) Last results may be stale.", in: menu)
@@ -124,7 +176,74 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
     }
 
-    @objc private func didWake() { startMonitoring() }
+    @objc private func didWake() { refreshDetails() }
+
+    @objc private func showDisks() {
+        if diskWindow == nil {
+            let view = NSHostingView(rootView: CompactDiskWindow(model: windowModel))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 340, height: 120),
+                                  styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+            window.title = "Disk Watch"
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.contentView = view
+            window.center()
+            diskWindow = window
+        }
+        resizeWindow()
+        diskWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func resizeWindow() {
+        let rows = windowModel.disks.isEmpty ? 66 : min(windowModel.disks.count * 48, 240)
+        diskWindow?.setContentSize(NSSize(width: 340, height: rows + 46))
+    }
+
+    private func refreshDetails() {
+        startMonitoring()
+        updateUsage()
+    }
+
+    private func updateUsage() {
+        let ids = Set(monitor.disks.map(\.id))
+        windowModel.usage = windowModel.usage.filter { ids.contains($0.key) }
+        guard usageTask == nil else { pendingRefresh = true; return }
+        let snapshot = monitor.disks
+        guard !snapshot.isEmpty else { return }
+        windowModel.refreshing = true
+        usageTask = Task { [weak self, usageReader] in
+            let result = await usageReader.read(snapshot)
+            guard let self, !Task.isCancelled else { return }
+            // Never apply a result to a newly attached disk that reused a BSD name.
+            let liveIDs = Set(self.monitor.disks.map(\.id))
+            for (id, usage) in result where liveIDs.contains(id) { self.windowModel.usage[id] = usage }
+            self.windowModel.refreshing = false
+            self.usageTask = nil
+            if self.pendingRefresh {
+                self.pendingRefresh = false
+                self.updateUsage()
+            }
+        }
+    }
+
+    private func ejectAll() {
+        guard !windowModel.ejecting else { return }
+        let targets = monitor.disks
+        guard !targets.isEmpty else { return }
+        windowModel.ejecting = true
+        windowModel.failures = [:]
+        Task {
+            let results = await ejector.ejectAll(targets) { index, count in
+                windowModel.message = "Ejecting \(index) of \(count)"
+            }
+            let failures = results.filter { !$0.succeeded }
+            windowModel.failures = Dictionary(uniqueKeysWithValues: failures.map { ($0.disk.id, $0.error!) })
+            monitor.refresh()
+            windowModel.ejecting = false
+            windowModel.message = failures.isEmpty ? "All disks ejected" : "\(failures.count) could not eject"
+        }
+    }
 
     @objc private func toggleLogin() {
         do {

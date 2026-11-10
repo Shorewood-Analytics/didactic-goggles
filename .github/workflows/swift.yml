@@ -30,3 +30,11 @@ jobs:
         run: swift run disk-watch --once
       - name: Verify continuous background operation and shutdown
         run: python3 scripts/check-background.py
+      - name: Capture native compact-window previews
+        run: swift run DiskWatch --capture-previews "$RUNNER_TEMP/previews"
+      - name: Upload native UI previews
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-ui-previews
+          path: ${{ runner.temp }}/previews/*.png
+          if-no-files-found: error

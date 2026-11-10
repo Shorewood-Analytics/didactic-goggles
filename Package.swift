@@ -10,7 +10,7 @@ let package = Package(
         .executable(name: "disk-watch", targets: ["DiskWatchCLI"])
     ],
     targets: [
-        .target(name: "DiskDiscovery", linkerSettings: [.linkedFramework("IOKit")]),
+        .target(name: "DiskDiscovery", linkerSettings: [.linkedFramework("IOKit"), .linkedFramework("DiskArbitration")]),
         .executableTarget(name: "DiskWatch", dependencies: ["DiskDiscovery"]),
         .executableTarget(name: "DiskWatchCLI", dependencies: ["DiskDiscovery"]),
         .testTarget(name: "DiskDiscoveryTests", dependencies: ["DiskDiscovery"])

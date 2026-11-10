@@ -14,6 +14,16 @@ public struct Disk: Codable, Equatable, Identifiable, Sendable {
     public let sizeBytes: UInt64
     public let transport: String
     public let connection: Connection
+    public var link: DetectedLink? = nil
+    public var cardType: String? = nil
+
+    public init(id: UInt64, bsdName: String, name: String, sizeBytes: UInt64,
+                transport: String, connection: Connection,
+                link: DetectedLink? = nil, cardType: String? = nil) {
+        self.id = id; self.bsdName = bsdName; self.name = name
+        self.sizeBytes = sizeBytes; self.transport = transport; self.connection = connection
+        self.link = link; self.cardType = cardType
+    }
 }
 
 /// Registry facts, kept separate from the selection policy for fixture testing.
