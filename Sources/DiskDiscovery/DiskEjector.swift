@@ -76,14 +76,19 @@ public final class DiskEjector {
                 DADiskUnmount(native, DADiskUnmountOptions(kDADiskUnmountOptionWhole), arbitrationCallback, context)
             }
             if let unmountError, unmountError.code != kDAReturnNotMounted {
-                results.append(EjectionResult(disk: disk, error: unmountError.message))
+                results.append(EjectionResult(disk: disk, error: "Unmount failed: \(unmountError.message)"))
+                continue
+            }
+            guard let current = try? eligibleDisks(),
+                  current.contains(where: { $0.id == disk.id && $0.bsdName == disk.bsdName }) else {
+                results.append(EjectionResult(disk: disk, error: "Disk disconnected during unmount; eject skipped."))
                 continue
             }
             let ejectError = await withCheckedContinuation { continuation in
                 let context = Unmanaged.passRetained(ArbitrationReply(continuation)).toOpaque()
                 DADiskEject(native, DADiskEjectOptions(kDADiskEjectOptionDefault), arbitrationCallback, context)
             }
-            results.append(EjectionResult(disk: disk, error: ejectError?.message))
+            results.append(EjectionResult(disk: disk, error: ejectError.map { "Eject failed: \($0.message)" }))
         }
         return results
     }

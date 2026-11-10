@@ -23,16 +23,20 @@ jobs:
       - name: Build and test library, background app, and CLI
         run: swift test -Xswiftc -warnings-as-errors
       - name: Build sandboxed app bundle
+        if: ${{ !cancelled() }}
         run: sh scripts/build-app.sh
       - name: Exercise sandboxed IOKit startup
+        if: ${{ !cancelled() }}
         run: dist/DiskWatch.app/Contents/MacOS/DiskWatch --smoke-test
       - name: Exercise headless snapshot
         run: swift run disk-watch --once
       - name: Verify continuous background operation and shutdown
         run: python3 scripts/check-background.py
       - name: Capture native compact-window previews
+        if: ${{ !cancelled() }}
         run: swift run DiskWatch --capture-previews "$RUNNER_TEMP/previews"
       - name: Upload native UI previews
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: native-ui-previews

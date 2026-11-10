@@ -10,7 +10,10 @@ final class EjectionIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let path = folder.appendingPathComponent("test.dmg").path
-        _ = try run("/usr/bin/hdiutil", ["create", "-size", "128m", "-fs", "APFS", "-volname", "DiskWatchTest", path])
+        let sourceFolder = folder.appendingPathComponent("source")
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try Data().write(to: sourceFolder.appendingPathComponent(".metadata_never_index"))
+        _ = try run("/usr/bin/hdiutil", ["create", "-srcfolder", sourceFolder.path, "-size", "128m", "-fs", "APFS", "-volname", "DiskWatchTest", path])
         let attach = try run("/usr/bin/hdiutil", ["attach", "-plist", "-nobrowse", path])
         let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: attach, format: nil) as? [String: Any])
         let entities = try XCTUnwrap(plist["system-entities"] as? [[String: Any]])
@@ -29,7 +32,18 @@ final class EjectionIntegrationTests: XCTestCase {
         // Only this test-owned disk image is injected. Production independently
         // revalidates against the physical external/SD discovery policy.
         let ejector = DiskEjector(eligibleDisks: { [disk] })
+        // Let Disk Arbitration finish publishing the image's APFS volumes.
+        try await Task.sleep(nanoseconds: 1_000_000_000)
         let results = await ejector.ejectAll([disk])
+        if !results[0].succeeded {
+            print("Ejection failure:", results[0].error ?? "unknown")
+            let command = Process()
+            command.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+            command.arguments = ["eject", device]
+            try command.run()
+            command.waitUntilExit()
+            print("diskutil comparison exit:", command.terminationStatus)
+        }
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].succeeded, results[0].error ?? "")
         XCTAssertFalse(ejector.isEjecting)
