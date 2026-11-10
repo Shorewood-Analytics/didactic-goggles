@@ -25,7 +25,7 @@ final class EjectionIntegrationTests: XCTestCase {
         try Data().write(to: sourceFolder.appendingPathComponent(".metadata_never_index"))
         let creation = filesystem == "APFS"
             ? ["create", "-srcfolder", sourceFolder.path, "-size", "128m", "-fs", filesystem, "-volname", "DiskWatchTest", path]
-            : ["create", "-size", "128m", "-fs", filesystem, "-format", "UDRW", "-volname", "DiskWatchTest", path]
+            : ["create", "-size", "128m", "-fs", filesystem, "-volname", "DiskWatchTest", path]
         _ = try run("/usr/bin/hdiutil", creation)
         let attach = try run("/usr/bin/hdiutil", ["attach", "-plist", "-nobrowse", path])
         let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: attach, format: nil) as? [String: Any])
@@ -49,6 +49,10 @@ final class EjectionIntegrationTests: XCTestCase {
         try await Task.sleep(nanoseconds: 1_000_000_000)
         let usage = await DiskUsageReader().read([disk])
         XCTAssertNotNil(usage[disk.id]?.percentUsed, usage[disk.id]?.unavailableReason ?? "")
+        if usage[disk.id]?.percentUsed == nil {
+            print("Fixture topology:", MediaLayout.read(disk))
+            print("Mounted counters:", MountedSpace.snapshot())
+        }
         let mount = try XCTUnwrap(entities.compactMap { $0["mount-point"] as? String }.first)
         let busyFile = URL(fileURLWithPath: mount).appendingPathComponent(".metadata_never_index")
         if filesystem == "ExFAT" { try Data().write(to: busyFile) }
