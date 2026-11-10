@@ -137,11 +137,15 @@ CI also runs the sandboxed executable and verifies the headless process stays al
 SIGTERM/SIGINT, then shuts down cleanly. Synthetic
 fixtures and CI startup checks do not establish real hardware coverage.
 
-CI also opts into a disposable TextEdit session with
-`DISK_WATCH_AUTOMATION_TESTS=1` to verify that the production automation script
-saves changed file contents before quitting. This test is skipped by default on
-personal Macs; only enable it in a disposable GUI session with TextEdit closed.
-It qualifies TextEdit's save behavior, not every application's scripting support.
+The live TextEdit save test is opt-in: run
+`DISK_WATCH_AUTOMATION_TESTS=1 swift test --filter NativeSaveTests` in a disposable
+GUI session with TextEdit closed, and approve macOS Automation access when asked.
+It checks saved file bytes after the production script closes the document and
+quits TextEdit. Unattended CI skips this test because macOS requires interactive
+consent for its hosted agent; a diagnostic run confirmed the pending consent
+dialog. Live application save/quit behavior remains unqualified until this test
+passes on an authorized Mac. CI still compiles the exact AppleScripts, tests
+helper timeouts, and verifies orchestration with simulated save failures.
 
 Successful Swift workflow runs provide a `DiskWatch-macOS` artifact containing
 the direct development app and a `native-ui-previews` artifact containing example

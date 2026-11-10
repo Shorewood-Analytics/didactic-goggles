@@ -89,6 +89,9 @@ public final class ApplicationReleaser {
 
     // Standard document Apple events. Saving and modified-state verification
     // precede every close. Unsupported commands fail visibly; no discard command.
+    // Use Cocoa Standard Suite codes directly: importing another application's
+    // terminology can launch that application merely to compile this script.
+    // Codes: developer.apple.com/library/archive/samplecode/Sketch/Listings/Sketch_sdef.html
     static let documentsScript = #"""
     on run argv
         set targetID to item 1 of argv
@@ -100,16 +103,15 @@ public final class ApplicationReleaser {
         set closedCount to 0
         with timeout of 30 seconds
             if not (application id targetID is running) then return "Application already exited"
-            using terms from application "TextEdit"
             tell application id targetID
-                set docs to get every document
+                set docs to get every «class docu»
                 repeat with d in docs
                     set docPath to ""
                     try
                         set docPath to POSIX path of ((get «class file» of d) as alias)
                     on error
                         try
-                            set docPath to (get path of d) as text
+                            set docPath to (get «class ppth» of d) as text
                         end try
                     end try
                     if docPath is "missing value" then set docPath to ""
@@ -120,26 +122,25 @@ public final class ApplicationReleaser {
                         end repeat
                     end considering
                     if affected then
-                        set changed to get modified of d
+                        set changed to get «class imod» of d
                         if changed then
                             if docPath is "" then
                                 set recoveredPath to recovery & "/Recovered-" & (savedCount + 1)
-                                save d in (POSIX file recoveredPath)
+                                «event coresave» d given «class kfil»: (POSIX file recoveredPath)
                             else
-                                save d
+                                «event coresave» d
                             end if
-                            if (get modified of d) then error "Document remains modified after saving; closure stopped"
+                            if (get «class imod» of d) then error "Document remains modified after saving; closure stopped"
                             set savedCount to savedCount + 1
                         end if
-                        close d saving yes
+                        «event coreclos» d given «class savo»: yes
                         set closedCount to closedCount + 1
                     end if
                 end repeat
                 if mode is "quitBlockingApp" then
-                    quit saving yes
+                    «event aevtquit» given «class savo»: yes
                 end if
             end tell
-            end using terms from
         end timeout
         return "Saved " & savedCount & "; closed " & closedCount & "; recovery folder: " & recovery
     end run

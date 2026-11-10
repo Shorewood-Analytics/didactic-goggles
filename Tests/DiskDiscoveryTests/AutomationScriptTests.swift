@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import XCTest
 @testable import DiskControl
 
@@ -9,6 +10,7 @@ final class AutomationScriptTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         for (index, script) in [ApplicationReleaser.finderScript, ApplicationReleaser.documentsScript].enumerated() {
+            let textEditWasRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").isEmpty
             let source = directory.appendingPathComponent("script-\(index).applescript")
             try script.write(to: source, atomically: true, encoding: .utf8)
             let process = Process()
@@ -20,6 +22,10 @@ final class AutomationScriptTests: XCTestCase {
             let message = errors.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             XCTAssertEqual(process.terminationStatus, 0, String(decoding: message, as: UTF8.self))
+            if !textEditWasRunning {
+                XCTAssertTrue(NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").isEmpty,
+                              "Compiling release scripts must not launch an unrelated editor")
+            }
         }
     }
 
