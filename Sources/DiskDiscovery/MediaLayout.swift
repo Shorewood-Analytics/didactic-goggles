@@ -89,12 +89,12 @@ struct MountedSpace {
     static func snapshot() -> [MountedSpace] {
         let expected = getfsstat(nil, 0, MNT_NOWAIT)
         guard expected > 0 else { return [] }
-        var entries = [statfs](repeating: statfs(), count: Int(expected) + 16)
+        var entries: [statfs] = .init(repeating: .init(), count: Int(expected) + 16)
         let count = entries.withUnsafeMutableBufferPointer {
             getfsstat($0.baseAddress, Int32($0.count * MemoryLayout<statfs>.stride), MNT_NOWAIT)
         }
         guard count > 0 else { return [] }
-        return entries.prefix(Int(count)).compactMap { original in
+        return entries.prefix(Int(count)).compactMap { original -> MountedSpace? in
             var entry = original
             let device = withUnsafeBytes(of: &entry.f_mntfromname) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
             guard device.hasPrefix("/dev/") else { return nil }

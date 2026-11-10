@@ -36,7 +36,7 @@ qualification are separate from this development build.
 ## Reuse the library
 
 `DiskDiscovery` contains the public `Disk` value type and `DiskMonitor`. It uses
-Foundation and IOKit, without AppKit or SwiftUI. Add this package in Xcode or SwiftPM.
+Foundation, IOKit, and Disk Arbitration, without AppKit or SwiftUI. Add this package in Xcode or SwiftPM.
 Create and use the monitor on the main actor, retain it for the life of the service,
 and service the main run loop. For example, inside a main-actor app/service owner:
 
@@ -67,8 +67,9 @@ swift run disk-watch          # JSON lines: initial snapshot, then changed snaps
 ```
 
 The continuous mode remains running until SIGINT/SIGTERM. Consumers must read
-stdout continuously; errors are reported on stderr. Discovery remains IOKit-based. `DiskUsageReader` uses read-only `diskutil` plist
-queries off the main thread for filesystem usage. GUI details refresh every 30
+stdout continuously; errors are reported on stderr. Discovery remains IOKit-based. `DiskUsageReader` maps registry media to native
+filesystem counters off the main thread. It needs no diskutil subprocess or
+file-content permission. GUI details refresh every 30
 seconds, on disk changes, on wake, and on manual refresh.
 
 ## Discovery policy
@@ -99,13 +100,15 @@ that do not report `Secure Digital` require a captured fixture and explicit supp
 swift test -Xswiftc -warnings-as-errors
 sh scripts/build-app.sh
 dist/DiskWatch.app/Contents/MacOS/DiskWatch --smoke-test
+python3 scripts/check-sandbox.py
 ```
 
 Tests cover selection policy, initial discovery, add/remove reconciliation,
 duplicate notifications, restart, stale callbacks, error recovery, and native
 notification setup/teardown. An integration test uses a temporary 1 MiB RAM disk
-to exercise real arrival/removal callbacks and virtual-media exclusion. CI also
-runs the sandboxed executable and verifies the headless process stays alive until
+to exercise real arrival/removal callbacks and virtual-media exclusion. A disposable APFS image tests capacity accounting and unmount/ejection through
+real Disk Arbitration callbacks, including a separately signed sandboxed probe.
+CI also runs the sandboxed executable and verifies the headless process stays alive until
 SIGTERM/SIGINT, then shuts down cleanly. Synthetic
 fixtures and CI startup checks do not establish real hardware coverage.
 
@@ -136,9 +139,12 @@ and [login startup](https://developer.apple.com/documentation/servicemanagement/
 - SD/MMC type comes directly from `Card Characteristics.Card Type`. Card capacity,
   names, and reader capability are never used to infer SDHC/SDXC/UHS classifications.
 - Fullness is `(formatted capacity - free space) / formatted capacity`. APFS pools
-  are counted once, regardless of volume count. Cross-disk APFS pools, incomplete
-  volume data, locked/unmounted volumes, and invalid counters produce an explicit
-  unavailable state. Physical capacity is shown separately from formatted capacity.
+  are counted once, regardless of volume count. Ambiguous topology, inconsistent
+  shared-pool counters, missing mounted filesystem data, and invalid counters
+  produce an explicit unavailable state. Physical capacity is shown separately.
+  Kernel counters may be cached; the displayed timestamp is when they were read,
+  not a promise that the filesystem has refreshed them. Quota-limited volumes and
+  multi-device storage need further hardware qualification.
 - `DiskUsageReader` and `DiskEjector` are reusable public library services. Usage
   samples include timestamps. Eject All returns a result for each targeted disk.
 
