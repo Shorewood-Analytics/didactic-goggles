@@ -120,6 +120,21 @@ public final class ApplicationReleaser {
         return POSIX file p
     end destinationFile
 
+    on documentPath(d, targetID)
+        set p to ""
+        tell application id targetID
+            try
+                set p to POSIX path of ((get «class file» of d) as alias)
+            on error
+                try
+                    set p to (get «class ppth» of d) as text
+                end try
+            end try
+        end tell
+        if p is "missing value" or p is "" then return ""
+        return my canonicalPath(p)
+    end documentPath
+
     on run argv
         set targetID to item 1 of argv
         set mode to item 2 of argv
@@ -137,16 +152,7 @@ public final class ApplicationReleaser {
             tell application id targetID
                 set docs to get every «class docu»
                 repeat with d in docs
-                    set docPath to ""
-                    try
-                        set docPath to POSIX path of ((get «class file» of d) as alias)
-                    on error
-                        try
-                            set docPath to (get «class ppth» of d) as text
-                        end try
-                    end try
-                    if docPath is "missing value" then set docPath to ""
-                    if docPath is not "" then set docPath to my canonicalPath(docPath)
+                    set docPath to my documentPath(contents of d, targetID)
                     set affected to (mode is "quitBlockingApp")
                     considering case
                         repeat with root in roots
@@ -163,6 +169,17 @@ public final class ApplicationReleaser {
                                 if targetID is "com.apple.TextEdit" then set recoveredPath to recoveredPath & ".rtf"
                                 set recoveredFile to my destinationFile(recoveredPath)
                                 «event coresave» d given «class kfil»: recoveredFile
+                                -- A first save can rename a name-based Apple
+                                -- event object specifier. Resolve the saved file
+                                -- again before checking modified state or closing.
+                                set matches to {}
+                                repeat with candidate in (get every «class docu»)
+                                    if (my documentPath(contents of candidate, targetID)) is (my canonicalPath(recoveredPath)) then
+                                        set end of matches to contents of candidate
+                                    end if
+                                end repeat
+                                if (count matches) is not 1 then error "Saved document identity could not be uniquely verified; closure stopped"
+                                set d to item 1 of matches
                             else
                                 «event coresave» d
                             end if
