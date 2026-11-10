@@ -92,6 +92,23 @@ are saved under `~/Library/Application Support/DiskWatch/Recovered Work/` when t
 application supports saving there. Unsupported save commands or denied Automation
 permissions produce a failure report; they do not authorize discarding work.
 
+## Headless triggers
+
+The GUI and command line share `MacEjectionService` and its staged coordinator.
+After installing the direct app in Applications, invoke:
+
+```sh
+/Applications/DiskWatch.app/Contents/MacOS/DiskWatch --eject-all
+```
+
+A button or script can run this directly. An iPhone Shortcut can use **Run Script
+over SSH** to invoke it on the Mac, and Siri can run that named Shortcut. The Mac
+must have a logged-in user session and Remote Login configured for that user.
+macOS Automation approvals must be established for the calling context before
+unattended use. The command opens no Disk Watch window, emits progress and results
+as JSON, and returns nonzero if any target remains unresolved. End-to-end iPhone
+and Siri triggering still requires qualification on the receiving Mac.
+
 ## Discovery policy
 
 IOKit matching and termination notifications watch whole `IOMedia` instances.
@@ -137,15 +154,13 @@ CI also runs the sandboxed executable and verifies the headless process stays al
 SIGTERM/SIGINT, then shuts down cleanly. Synthetic
 fixtures and CI startup checks do not establish real hardware coverage.
 
-The live TextEdit save test is opt-in: run
-`DISK_WATCH_AUTOMATION_TESTS=1 swift test --filter NativeSaveTests` in a disposable
-GUI session with TextEdit closed, and approve macOS Automation access when asked.
-It checks saved file bytes after the production script closes the document and
-quits TextEdit. Unattended CI skips this test because macOS requires interactive
-consent for its hosted agent; a diagnostic run confirmed the pending consent
-dialog. Live application save/quit behavior remains unqualified until this test
-passes on an authorized Mac. CI still compiles the exact AppleScripts, tests
-helper timeouts, and verifies orchestration with simulated save failures.
+CI opts into a disposable TextEdit session with `DISK_WATCH_AUTOMATION_TESTS=1`.
+A CI-only Accessibility helper approves the normal consent dialog only when it
+names the hosted CI agent and TextEdit; it never changes the TCC database. The
+native test verifies targeted document saving, preservation of an unrelated open
+document, recovery of untitled work, and saved bytes after app exit. This test is
+skipped by default on personal Macs; opt in only in a disposable GUI session.
+It qualifies TextEdit, not every application's scripting support.
 
 Successful Swift workflow runs provide a `DiskWatch-macOS` artifact containing
 the direct development app and a `native-ui-previews` artifact containing example

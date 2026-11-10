@@ -240,7 +240,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
                 windowModel.message = "\(position)/\(targets.count) · \(event.detail)"
             }
             let failures = results.filter { !$0.succeeded }
-            windowModel.failures = Dictionary(uniqueKeysWithValues: failures.map { ($0.disk.id, $0.error ?? "Could not eject disk") })
+            windowModel.failures = Dictionary(uniqueKeysWithValues: failures.map { result in
+                let reason = result.events.last { $0.stage == "releaseFailed" }?.detail
+                let message = [result.error, reason].compactMap { $0 }.joined(separator: "\n")
+                return (result.disk.id, message.isEmpty ? "Could not eject disk" : message)
+            })
             windowModel.blockers = Dictionary(uniqueKeysWithValues: failures.compactMap { result in
                 result.diagnosis.map { (result.disk.id, $0) }
             })

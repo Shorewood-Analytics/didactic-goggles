@@ -58,7 +58,7 @@ final class EjectionCoordinatorTests: XCTestCase {
         let results = await coordinator.ejectAll([disk])
         XCTAssertFalse(results[0].succeeded)
         XCTAssertEqual(levels, [.closeDocuments])
-        XCTAssertTrue(results[0].events.contains { $0.detail == "save failed" })
+        XCTAssertTrue(results[0].events.contains { $0.detail.contains("save failed") })
     }
     @MainActor
     func testFormerBlockerIsNotClosedAndUnverifiedSuccessIsFailure() async {
@@ -84,18 +84,42 @@ final class EjectionCoordinatorTests: XCTestCase {
         let newcomer = DiskBlocker(pid: 200, startedAt: "456", name: "New Editor",
                                   executable: "/NewEditor", paths: ["/Volumes/Fixture"])
         var releasedOriginal = false
+        var releasedNewcomer = false
         var released: [String] = []
-        let coordinator = EjectionCoordinator(eject: { _ in .init(error: "busy", isBusy: true) }, inspect: { _ in
+        let coordinator = EjectionCoordinator(eject: { _ in
+            .init(error: releasedNewcomer ? nil : "busy", isBusy: !releasedNewcomer)
+        }, inspect: { _ in
             .init(blockers: releasedOriginal ? [newcomer] : [original])
         }, release: { _, holder, level in
             released.append(holder.id)
             XCTAssertEqual(level, .closeDocuments)
             releasedOriginal = true
+            releasedNewcomer = holder.id == newcomer.id
             return .init(succeeded: true, detail: "closed")
-        }, verify: { _ in false })
+        }, verify: { _ in true })
         let results = await coordinator.ejectAll([disk])
-        XCTAssertFalse(results[0].succeeded)
-        XCTAssertEqual(released, [original.id])
+        XCTAssertTrue(results[0].succeeded)
+        XCTAssertEqual(released, [original.id, newcomer.id])
+    }
+
+    @MainActor
+    func testRetriesEjectionWhenHolderDisappearsBeforeRelease() async {
+        let blocker = blocker
+        var attempts = 0
+        var inspections = 0
+        let coordinator = EjectionCoordinator(eject: { _ in
+            attempts += 1
+            return .init(error: attempts == 1 ? "busy" : nil, isBusy: attempts == 1)
+        }, inspect: { _ in
+            inspections += 1
+            return .init(blockers: inspections == 1 ? [blocker] : [])
+        }, release: { _, _, _ in
+            XCTFail("A departed holder must not be closed")
+            return .init(succeeded: false, detail: "unexpected")
+        }, verify: { _ in true })
+        let results = await coordinator.ejectAll([disk])
+        XCTAssertTrue(results[0].succeeded)
+        XCTAssertEqual(attempts, 2)
     }
 
     @MainActor

@@ -106,42 +106,51 @@ public final class EjectionCoordinator {
             var diagnosis: BlockerReport?
             var saveFailures: Set<String> = []
             var mayQuit: Set<String> = []
+            var closed: Set<String> = []
+            var quit: Set<String> = []
+            var actions = 0
+            var vanishedHolders = 0
             // Always try normal ejection first. Each escalation is scoped to
-            // freshly confirmed holders of this exact disk, never all apps.
-            for level in [ReleaseLevel.closeDocuments, .quitBlockingApp] where error != nil && attempt.isBusy {
+            // freshly confirmed holders. New holders start at document release,
+            // even if a previous holder already reached the quit stage.
+            while error != nil && attempt.isBusy && actions < 64 && vanishedHolders < 8 {
                 guard !Task.isCancelled else { error = "Ejection cancelled"; break }
                 let report = await inspect(disk)
                 diagnosis = report
                 record("diagnose", report.blockers.isEmpty ? "No inspectable process holder found" : "Found \(report.blockers.count) process holder(s)")
-                if report.blockers.isEmpty { break }
-                var changed = false
-                for blocker in report.blockers {
-                    guard !Task.isCancelled else { error = "Ejection cancelled"; break }
-                    guard !saveFailures.contains(blocker.id),
-                          level != .quitBlockingApp || mayQuit.contains(blocker.id) else { continue }
-                    // Recheck immediately before saving/closing: a former holder
-                    // must not be closed after it has released the disk.
-                    let fresh = await inspect(disk)
-                    guard !Task.isCancelled else { error = "Ejection cancelled"; break }
-                    guard let current = fresh.blockers.first(where: {
-                        $0.id == blocker.id && $0.executable == blocker.executable
-                    }) else { continue }
-                    record(level.rawValue, "\(current.name) (PID \(current.pid))")
-                    let outcome = await release(disk, current, level)
-                    record(outcome.succeeded ? "released" : "releaseFailed", outcome.detail)
-                    if !outcome.succeeded && !outcome.mayEscalate { saveFailures.insert(blocker.id) }
-                    if level == .closeDocuments && (outcome.succeeded || outcome.mayEscalate) {
-                        mayQuit.insert(blocker.id)
-                    }
-                    guard !Task.isCancelled else { error = "Ejection cancelled"; break }
-                    changed = changed || outcome.succeeded
-                    // Reattempt after each action. Stop touching applications as
-                    // soon as the disk can eject.
+                guard !Task.isCancelled else { error = "Ejection cancelled"; break }
+                let candidate = report.blockers.first { !closed.contains($0.id) && !saveFailures.contains($0.id) }
+                    ?? report.blockers.first { mayQuit.contains($0.id) && !quit.contains($0.id) && !saveFailures.contains($0.id) }
+                guard let blocker = candidate else {
+                    // References may have disappeared independently since the
+                    // last attempt. Give normal ejection the final say.
                     attempt = await eject(disk)
                     error = attempt.error
-                    if error == nil || !attempt.isBusy { break }
+                    break
                 }
-                if !changed, level == .quitBlockingApp { break }
+                let level: ReleaseLevel = closed.contains(blocker.id) ? .quitBlockingApp : .closeDocuments
+                let fresh = await inspect(disk)
+                guard !Task.isCancelled else { error = "Ejection cancelled"; break }
+                if let current = fresh.blockers.first(where: {
+                    $0.id == blocker.id && $0.executable == blocker.executable
+                }) {
+                    record(level.rawValue, "\(current.name) (PID \(current.pid))")
+                    let outcome = await release(disk, current, level)
+                    record(outcome.succeeded ? "released" : "releaseFailed", "\(current.name) (PID \(current.pid)): \(outcome.detail)")
+                    actions += 1
+                    if level == .closeDocuments { closed.insert(blocker.id) }
+                    else { quit.insert(blocker.id) }
+                    if !outcome.succeeded && !outcome.mayEscalate { saveFailures.insert(blocker.id) }
+                    if level == .closeDocuments && (outcome.succeeded || outcome.mayEscalate) { mayQuit.insert(blocker.id) }
+                } else { vanishedHolders += 1 }
+                guard !Task.isCancelled else { error = "Ejection cancelled"; break }
+                // Reattempt after every action or disappeared holder. Stop
+                // touching applications as soon as the disk can eject.
+                attempt = await eject(disk)
+                error = attempt.error
+            }
+            if error != nil && (actions >= 64 || vanishedHolders >= 8) {
+                record("releaseFailed", "Disk references kept changing; bounded recovery stopped with the disk still attached")
             }
             if error == nil {
                 record("verify", "Checking that the original disk attachment disappeared")

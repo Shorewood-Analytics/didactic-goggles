@@ -22,7 +22,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Build and test library, background app, and CLI
-        run: swift test -Xswiftc -warnings-as-errors
+        env:
+          DISK_WATCH_AUTOMATION_TESTS: "1"
+        run: |
+          swift scripts/approve-test-automation.swift &
+          fixture_consent_pid=$!
+          trap 'kill "$fixture_consent_pid" 2>/dev/null || true' EXIT
+          swift test -Xswiftc -warnings-as-errors
       - name: Build sandboxed app bundle
         if: ${{ !cancelled() }}
         run: sh scripts/build-app.sh --sandboxed

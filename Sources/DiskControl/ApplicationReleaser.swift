@@ -24,7 +24,7 @@ public final class ApplicationReleaser {
             return .init(succeeded: false, detail: "\(blocker.name) (PID \(blocker.pid)) is a background process; no save/checkpoint adapter is registered")
         }
         let inspection = DiskInspection.read(disk)
-        let roots = inspection.volumes.map(\.path)
+        let roots = inspection.volumes.map { URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path }
         guard inspection.presence == .present, !roots.isEmpty,
               !roots.contains("/"), !roots.contains("/System/Volumes/Data") else {
             return .init(succeeded: false, detail: "Disk is no longer mounted or its identity cannot be safely confirmed")
@@ -35,10 +35,16 @@ public final class ApplicationReleaser {
             return .init(succeeded: false, detail: "Process no longer holds this disk, or ejection was cancelled")
         }
         if bundleID == "com.apple.finder" {
-            guard level == .closeDocuments else {
-                return .init(succeeded: false, detail: "Finder still holds the disk; its other windows will not be closed")
+            let source = level == .closeDocuments ? Self.finderScript : Self.finderQuitScript
+            let result = await ScriptRunner.run(source, arguments: roots)
+            if level == .quitBlockingApp, result.succeeded {
+                let deadline = Date().addingTimeInterval(10)
+                while !application.isTerminated, !Task.isCancelled, Date() < deadline {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                return .init(succeeded: application.isTerminated,
+                             detail: application.isTerminated ? "Finder exited after targeted window release" : "Finder has not finished quitting")
             }
-            let result = await ScriptRunner.run(Self.finderScript, arguments: roots)
             return .init(succeeded: result.succeeded, detail: result.output)
         }
         let recovery = FileManager.default.homeDirectoryForCurrentUser
@@ -87,6 +93,15 @@ public final class ApplicationReleaser {
     end run
     """#
 
+    // Used only after targeted window closure, another normal eject attempt,
+    // and a fresh confirmation that this Finder process still holds the disk.
+    static let finderQuitScript = #"""
+    with timeout of 30 seconds
+        if application "Finder" is running then tell application "Finder" to quit
+    end timeout
+    return "Requested Finder exit after targeted window closure"
+    """#
+
     // Standard document Apple events. Saving and modified-state verification
     // precede every close. Unsupported commands fail visibly; no discard command.
     // Use Cocoa Standard Suite codes directly: importing another application's
@@ -115,6 +130,11 @@ public final class ApplicationReleaser {
                         end try
                     end try
                     if docPath is "missing value" then set docPath to ""
+                    if docPath is not "" then
+                        try
+                            set docPath to POSIX path of ((POSIX file docPath) as alias)
+                        end try
+                    end if
                     set affected to (mode is "quitBlockingApp")
                     considering case
                         repeat with root in roots
@@ -123,7 +143,7 @@ public final class ApplicationReleaser {
                     end considering
                     if affected then
                         set changed to get «class imod» of d
-                        if changed then
+                        if changed or docPath is "" then
                             if docPath is "" then
                                 set recoveredPath to recovery & "/Recovered-" & (savedCount + 1)
                                 «event coresave» d given «class kfil»: (POSIX file recoveredPath)
@@ -133,12 +153,12 @@ public final class ApplicationReleaser {
                             if (get «class imod» of d) then error "Document remains modified after saving; closure stopped"
                             set savedCount to savedCount + 1
                         end if
-                        «event coreclos» d given «class savo»: yes
+                        «event coreclos» d given «class savo»: «constant savoyes »
                         set closedCount to closedCount + 1
                     end if
                 end repeat
                 if mode is "quitBlockingApp" then
-                    «event aevtquit» given «class savo»: yes
+                    «event aevtquit» given «class savo»: «constant savoyes »
                 end if
             end tell
         end timeout
