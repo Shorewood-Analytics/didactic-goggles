@@ -1,0 +1,39 @@
+import Foundation
+import AppKit
+import XCTest
+@testable import DiskControl
+
+final class AutomationScriptTests: XCTestCase {
+    @MainActor
+    func testNativeAppleScriptCompilerAcceptsReleaseScripts() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for (index, script) in [ApplicationReleaser.finderScript, ApplicationReleaser.finderQuitScript, ApplicationReleaser.documentsScript].enumerated() {
+            let textEditWasRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").isEmpty
+            let source = directory.appendingPathComponent("script-\(index).applescript")
+            try script.write(to: source, atomically: true, encoding: .utf8)
+            let process = Process()
+            let errors = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osacompile")
+            process.arguments = ["-o", directory.appendingPathComponent("script-\(index).scpt").path, source.path]
+            process.standardError = errors
+            try process.run()
+            let message = errors.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 0, String(decoding: message, as: UTF8.self))
+            if !textEditWasRunning {
+                XCTAssertTrue(NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").isEmpty,
+                              "Compiling release scripts must not launch an unrelated editor")
+            }
+        }
+    }
+
+    func testAutomationHelperIsBoundedByTimeout() async {
+        let start = Date()
+        let result = await ScriptRunner.run("delay 30", arguments: [], timeout: 0.1)
+        XCTAssertFalse(result.succeeded)
+        XCTAssertTrue(result.output.contains("timed out"), result.output)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10, "The helper must not survive its deadline")
+    }
+}

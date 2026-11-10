@@ -162,6 +162,10 @@ final class IOKitDiskSource: DiskSource {
 
         // Inspect the nearest physical storage device. A partition/container
         // with an intervening IOMedia ancestor must not duplicate its disk.
+        var link: DetectedLink?
+        var cardType = LinkDecoder.cardType(values)
+        var sawUSBDevice = false
+        var sawPCIDevice = false
         var entry = media
         IOObjectRetain(entry)
         defer { IOObjectRelease(entry) }
@@ -171,21 +175,47 @@ final class IOKitDiskSource: DiskSource {
                     == KERN_SUCCESS else { break }
             IOObjectRelease(entry)
             entry = parent
-            if IOObjectConformsTo(entry, "IOMedia") != 0 {
+            if !facts.hasPhysicalDevice, IOObjectConformsTo(entry, "IOMedia") != 0 {
                 facts.hasMediaAncestor = true
                 break
             }
-            if IOObjectConformsTo(entry, "IOBlockStorageDevice") != 0 {
+            let device = properties(entry) ?? [:]
+            cardType = cardType ?? LinkDecoder.cardType(device)
+            if !facts.hasPhysicalDevice, IOObjectConformsTo(entry, "IOBlockStorageDevice") != 0 {
                 facts.hasPhysicalDevice = true
-                let device = properties(entry) ?? [:]
                 let protocolInfo = device["Protocol Characteristics"] as? [String: Any]
                 facts.transport = protocolInfo?["Physical Interconnect"] as? String
                 facts.location = protocolInfo?["Physical Interconnect Location"] as? String
                 let characteristics = device["Device Characteristics"] as? [String: Any]
                 facts.name = characteristics?["Product Name"] as? String
+                link = LinkDecoder.port(device)
+            }
+            // Stop at the first USB device: a faster parent hub is not this disk's link.
+            if facts.transport == "USB", !sawUSBDevice {
+                let host = IOObjectConformsTo(entry, "IOUSBHostDevice") != 0
+                let legacy = IOObjectConformsTo(entry, "IOUSBDevice") != 0
+                if host || legacy {
+                    sawUSBDevice = true
+                    if let speed = device[host ? "USBSpeed" : "Device Speed"] as? NSNumber {
+                        link = LinkDecoder.usb(speed.intValue, host: host) ?? link
+                    }
+                    break
+                }
+            }
+            // The endpoint's PCIe link is not the Thunderbolt cable's link rate.
+            if facts.transport == "PCI-Express", !sawPCIDevice,
+               IOObjectConformsTo(entry, "IOPCIDevice") != 0 {
+                sawPCIDevice = true
+                if let status = device["IOPCIExpressLinkStatus"] as? NSNumber {
+                    link = LinkDecoder.pci(status.uint32Value) ?? link
+                }
                 break
             }
+            if facts.hasPhysicalDevice, link == nil { link = LinkDecoder.port(device) }
         }
-        return facts.selectedDisk()
+        guard var disk = facts.selectedDisk() else { return nil }
+        disk.link = link
+        disk.cardType = cardType
+        return disk
     }
 }

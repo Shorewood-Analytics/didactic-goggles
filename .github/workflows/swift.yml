@@ -16,17 +16,74 @@ concurrency:
 jobs:
   macos:
     runs-on: macos-15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Build and test library, background app, and CLI
-        run: swift test -Xswiftc -warnings-as-errors
+        env:
+          DISK_WATCH_AUTOMATION_TESTS: "1"
+        run: |
+          swift scripts/approve-test-automation.swift &
+          fixture_consent_pid=$!
+          trap 'kill "$fixture_consent_pid" 2>/dev/null || true' EXIT
+          swift test -Xswiftc -warnings-as-errors
       - name: Build sandboxed app bundle
-        run: sh scripts/build-app.sh
+        if: ${{ !cancelled() }}
+        run: sh scripts/build-app.sh --sandboxed
       - name: Exercise sandboxed IOKit startup
+        if: ${{ !cancelled() }}
         run: dist/DiskWatch.app/Contents/MacOS/DiskWatch --smoke-test
+      - name: Verify capacity and APFS/exFAT ejection inside the sandbox
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check-sandbox.py
+      - name: Build and exercise direct-distribution app bundle
+        if: ${{ !cancelled() }}
+        run: |
+          sh scripts/build-app.sh
+          dist/DiskWatch.app/Contents/MacOS/DiskWatch --smoke-test
+          dist/DiskWatch.app/Contents/MacOS/DiskWatch --help
+          dist/DiskWatch.app/Contents/MacOS/disk-watch --help
+          if dist/DiskWatch.app/Contents/MacOS/DiskWatch --eject-all --diagnose; then
+            echo 'Conflicting command arguments must be rejected' >&2
+            exit 1
+          fi
+          ditto -c -k --sequesterRsrc --keepParent dist/DiskWatch.app dist/DiskWatch-macOS.zip
+      - name: Upload development app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: DiskWatch-macOS
+          path: dist/DiskWatch-macOS.zip
+          if-no-files-found: error
       - name: Exercise headless snapshot
-        run: swift run disk-watch --once
+        if: ${{ !cancelled() }}
+        run: |
+          swift run disk-watch --once
+          swift run disk-watch diagnose
       - name: Verify continuous background operation and shutdown
+        if: ${{ !cancelled() }}
         run: python3 scripts/check-background.py
+      - name: Capture GUI diagnostics on failure
+        if: failure()
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/diagnostics"
+          /usr/sbin/screencapture -x "$RUNNER_TEMP/diagnostics/desktop.png"
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-failure-diagnostics
+          path: ${{ runner.temp }}/diagnostics/
+          if-no-files-found: ignore
+      - name: Capture native compact-window previews
+        if: ${{ !cancelled() }}
+        run: swift run DiskWatch --capture-previews "$RUNNER_TEMP/previews"
+      - name: Upload native UI previews
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-ui-previews
+          path: ${{ runner.temp }}/previews/*.png
+          if-no-files-found: error

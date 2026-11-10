@@ -1,13 +1,26 @@
 import AppKit
 import DiskDiscovery
+import DiskControl
 import ServiceManagement
+import SwiftUI
 
 @main
 struct DiskWatchApp {
     @MainActor
     static func main() {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        let usage = "Usage: DiskWatch [--eject-all | --diagnose | --smoke-test | --capture-previews DIRECTORY]\nEjection may save and close documents on busy disks and quit the blocking app."
+        if arguments == ["--help"] { print(usage); return }
+        guard arguments.isEmpty || arguments == ["--eject-all"] || arguments == ["--diagnose"]
+                || arguments == ["--smoke-test"]
+                || (arguments.count == 2 && arguments.first == "--capture-previews") else {
+            fputs("\(usage)\n", stderr)
+            exit(EXIT_FAILURE)
+        }
+        if arguments == ["--eject-all"] { exit(HeadlessEjection.run(.ejectAll)) }
+        if arguments == ["--diagnose"] { exit(HeadlessEjection.run(.diagnose)) }
         // Exercise the signed sandboxed executable in CI without opening a UI.
-        if CommandLine.arguments.contains("--smoke-test") {
+        if arguments == ["--smoke-test"] {
             let monitor = DiskMonitor()
             do {
                 try monitor.start()
@@ -20,6 +33,10 @@ struct DiskWatchApp {
             }
             return
         }
+        if arguments.first == "--capture-previews" {
+            capturePreviews()
+            return
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
@@ -29,26 +46,58 @@ struct DiskWatchApp {
 }
 
 @MainActor
-private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     private let monitor = DiskMonitor()
     private var statusItem: NSStatusItem?
     private var loginError: String?
+    private let windowModel = DiskWindowModel()
+    private let usageReader = DiskUsageReader()
+    private let ejector = MacEjectionService()
+    private var diskWindow: NSWindow?
+    private var usageTask: Task<Void, Never>?
+    private var usageTimer: Timer?
+    private var pendingRefresh = false
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showDisks()
+        return true
+    }
+
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "externaldrive", accessibilityDescription: "Disk Watch")
         item.button?.imagePosition = .imageLeading
         statusItem = item
-        monitor.onChange = { [weak self] in self?.render() }
+        monitor.onChange = { [weak self] in
+            guard let self else { return }
+            self.windowModel.disks = self.monitor.disks
+            self.windowModel.monitoringError = self.monitor.lastError
+            let ids = Set(self.monitor.disks.map(\.id))
+            self.windowModel.failures = self.windowModel.failures.filter { ids.contains($0.key) }
+            self.windowModel.blockers = self.windowModel.blockers.filter { ids.contains($0.key) }
+            self.render()
+            self.resizeWindow()
+            self.updateUsage()
+        }
+        windowModel.refresh = { [weak self] in self?.refreshDetails() }
+        windowModel.ejectAll = { [weak self] in self?.ejectAll() }
+        usageTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshDetails() }
+        }
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(didWake),
             name: NSWorkspace.didWakeNotification, object: nil
         )
         startMonitoring()
+        showDisks()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+        usageTimer?.invalidate()
+        usageTask?.cancel()
         monitor.onChange = nil
         monitor.stop()
     }
@@ -70,6 +119,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     private func populate(_ menu: NSMenu) {
         menu.removeAllItems()
+        action("Show Disks…", #selector(showDisks), in: menu)
+        menu.addItem(.separator())
         label(monitor.isRunning ? "Watching disks in the background" : "Monitoring stopped", in: menu)
         if let error = monitor.lastError {
             label("\(error) Last results may be stale.", in: menu)
@@ -124,7 +175,84 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
     }
 
-    @objc private func didWake() { startMonitoring() }
+    @objc private func didWake() { refreshDetails() }
+
+    @objc private func showDisks() {
+        if diskWindow == nil {
+            let view = NSHostingView(rootView: CompactDiskWindow(model: windowModel))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 340, height: 120),
+                                  styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+            window.title = "Disk Watch"
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.contentView = view
+            window.center()
+            diskWindow = window
+        }
+        resizeWindow()
+        diskWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func resizeWindow() {
+        let rows = windowModel.disks.isEmpty ? 66 : min(windowModel.disks.count * 48, 240)
+        diskWindow?.setContentSize(NSSize(width: 340, height: rows + 46))
+    }
+
+    private func refreshDetails() {
+        startMonitoring()
+        updateUsage()
+    }
+
+    private func updateUsage() {
+        let ids = Set(monitor.disks.map(\.id))
+        windowModel.usage = windowModel.usage.filter { ids.contains($0.key) }
+        guard usageTask == nil else { pendingRefresh = true; return }
+        let snapshot = monitor.disks
+        guard !snapshot.isEmpty else { return }
+        windowModel.refreshing = true
+        usageTask = Task { [weak self, usageReader] in
+            let result = await usageReader.read(snapshot)
+            guard let self, !Task.isCancelled else { return }
+            // Never apply a result to a newly attached disk that reused a BSD name.
+            let liveIDs = Set(self.monitor.disks.map(\.id))
+            for (id, usage) in result where liveIDs.contains(id) { self.windowModel.usage[id] = usage }
+            self.windowModel.refreshing = false
+            self.usageTask = nil
+            if self.pendingRefresh {
+                self.pendingRefresh = false
+                self.updateUsage()
+            }
+        }
+    }
+
+    private func ejectAll() {
+        guard !windowModel.ejecting, monitor.lastError == nil else { return }
+        let targets = monitor.disks
+        guard !targets.isEmpty else { return }
+        windowModel.ejecting = true
+        windowModel.failures = [:]
+        windowModel.blockers = [:]
+        windowModel.message = "Preparing to eject \(targets.count) disk(s)"
+        Task {
+            let results = await ejector.coordinator.ejectAll(targets) { event in
+                let position = targets.firstIndex { $0.id == event.diskID }.map { $0 + 1 } ?? 1
+                windowModel.message = "\(position)/\(targets.count) · \(event.detail)"
+            }
+            let failures = results.filter { !$0.succeeded }
+            windowModel.failures = Dictionary(uniqueKeysWithValues: failures.map { result in
+                let reason = result.events.last { $0.stage == "releaseFailed" }?.detail
+                let message = [result.error, reason].compactMap { $0 }.joined(separator: "\n")
+                return (result.disk.id, message.isEmpty ? "Could not eject disk" : message)
+            })
+            windowModel.blockers = Dictionary(uniqueKeysWithValues: failures.compactMap { result in
+                result.diagnosis.map { (result.disk.id, $0) }
+            })
+            monitor.refresh()
+            windowModel.ejecting = false
+            windowModel.message = failures.isEmpty ? "\(results.count) ejected" : "\(failures.count) could not eject"
+        }
+    }
 
     @objc private func toggleLogin() {
         do {

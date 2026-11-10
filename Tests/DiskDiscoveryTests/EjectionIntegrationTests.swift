@@ -1,0 +1,152 @@
+import Foundation
+import IOKit
+import XCTest
+import DiskControl
+@testable import DiskDiscovery
+
+final class EjectionIntegrationTests: XCTestCase {
+    @MainActor
+    func testUnmountAndEjectControlledAPFSImage() async throws {
+        try await exerciseImage(filesystem: "APFS")
+    }
+
+    @MainActor
+    func testUnmountAndEjectControlledExFATImage() async throws {
+        try await exerciseImage(filesystem: "ExFAT")
+    }
+
+    @MainActor
+    private func exerciseImage(filesystem: String) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = folder.appendingPathComponent("test.dmg").path
+        let sourceFolder = folder.appendingPathComponent("source")
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try Data().write(to: sourceFolder.appendingPathComponent(".metadata_never_index"))
+        if filesystem == "APFS" {
+            _ = try run("/usr/bin/hdiutil", ["create", "-srcfolder", sourceFolder.path, "-size", "128m", "-fs", filesystem, "-volname", "DiskWatchTest", path])
+        } else {
+            _ = try run("/usr/bin/hdiutil", ["create", "-size", "512m", "-layout", "NONE", path])
+            let raw = try run("/usr/bin/hdiutil", ["attach", "-nomount", "-plist", path])
+            let rawPlist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: raw, format: nil) as? [String: Any])
+            let rawEntities = try XCTUnwrap(rawPlist["system-entities"] as? [[String: Any]])
+            let rawDevice = try XCTUnwrap(rawEntities.compactMap { $0["dev-entry"] as? String }.first {
+                $0.range(of: #"^/dev/disk[0-9]+$"#, options: .regularExpression) != nil
+            })
+            defer {
+                if (try? imageOwnsDevice(path: path, device: rawDevice)) == true {
+                    _ = try? run("/usr/bin/hdiutil", ["detach", rawDevice])
+                }
+            }
+            // Resolve the exact image association again before formatting.
+            // A stale BSD name must never select a physical host disk.
+            guard try imageOwnsDevice(path: path, device: rawDevice) else {
+                throw NSError(domain: "Fixture does not own the device", code: 1)
+            }
+            _ = try run("/usr/sbin/diskutil", ["eraseDisk", "ExFAT", "DWTEST", "MBR", rawDevice])
+        }
+        let attach = try run("/usr/bin/hdiutil", ["attach", "-plist", "-nobrowse", path])
+        let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: attach, format: nil) as? [String: Any])
+        let entities = try XCTUnwrap(plist["system-entities"] as? [[String: Any]])
+        let device = try XCTUnwrap(entities.compactMap { $0["dev-entry"] as? String }.first {
+            $0.range(of: #"^/dev/disk[0-9]+$"#, options: .regularExpression) != nil
+        })
+        defer {
+            if (try? imageOwnsDevice(path: path, device: device)) == true {
+                _ = try? run("/usr/bin/hdiutil", ["detach", device])
+            }
+        }
+        let name = String(device.dropFirst(5))
+        let media = IOServiceGetMatchingService(kIOMainPortDefault, IOBSDNameMatching(kIOMainPortDefault, 0, name))
+        XCTAssertNotEqual(media, 0)
+        defer { if media != 0 { IOObjectRelease(media) } }
+        var id: UInt64 = 0
+        XCTAssertEqual(IORegistryEntryGetRegistryEntryID(media, &id), KERN_SUCCESS)
+        let disk = Disk(id: id, bsdName: name, name: "Test image", sizeBytes: 128_000_000,
+                        transport: "Virtual Interface", connection: .external)
+        // Only this test-owned disk image is injected. Production independently
+        // revalidates against the physical external/SD discovery policy.
+        let ejector = DiskEjector(eligibleDisks: { [disk] })
+        // Let Disk Arbitration finish publishing the image's APFS volumes.
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        let usage = await DiskUsageReader().read([disk])
+        XCTAssertNotNil(usage[disk.id]?.percentUsed, usage[disk.id]?.unavailableReason ?? "")
+        if usage[disk.id]?.percentUsed == nil {
+            print("Fixture topology:", MediaLayout.read(disk))
+            print("Mounted counters:", MountedSpace.snapshot())
+        }
+        let mount = try XCTUnwrap(entities.compactMap { $0["mount-point"] as? String }.first)
+        let busyFile = URL(fileURLWithPath: mount).appendingPathComponent(".metadata_never_index")
+        if filesystem == "ExFAT" { try Data().write(to: busyFile) }
+        let handle = try FileHandle(forReadingFrom: busyFile)
+        defer { try? handle.close() }
+        let inspector = ProcessBlockerInspector()
+        let holders = await inspector.inspect(disk)
+        XCTAssertTrue(holders.blockers.contains { $0.pid == getpid() }, "Must identify the process holding the open file")
+        let busy = await ejector.ejectAll([disk])
+        XCTAssertFalse(busy[0].succeeded, "An open file must prevent unmount; no force fallback")
+        XCTAssertTrue(busy[0].isBusy, "The native refusal must enter targeted recovery: \(busy[0].error ?? "")")
+        XCTAssertTrue(MountedSpace.snapshot().contains { $0.path == mount })
+
+        let stale = Disk(id: UInt64.max, bsdName: "disk999999", name: "Stale", sizeBytes: 1,
+                         transport: "USB", connection: .external)
+        var releases = 0
+        let coordinator = EjectionCoordinator(eject: { target in
+            let result = await ejector.ejectAll([target])[0]
+            return .init(error: result.error, isBusy: result.isBusy)
+        }, inspect: { await inspector.inspect($0) }, release: { _, holder, level in
+            // Release only the test's own handle; never signal an application
+            // discovered on the host. All inspection/ejection here is native.
+            guard holder.pid == getpid() else { return .init(succeeded: false, detail: "Not the test holder") }
+            XCTAssertEqual(level, .closeDocuments)
+            do {
+                try handle.close()
+                releases += 1
+                return .init(succeeded: true, detail: "Closed the test-owned file")
+            } catch { return .init(succeeded: false, detail: error.localizedDescription) }
+        }, verify: { target in
+            for _ in 0..<30 {
+                if DiskInspection.presence(of: target) == .gone { return true }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            return false
+        })
+        let results = await coordinator.ejectAll([stale, disk, disk])
+        XCTAssertEqual(results.count, 2, "Batch deduplicates attachments and continues after failure")
+        XCTAssertFalse(results[0].succeeded)
+        XCTAssertTrue(results[1].succeeded, results[1].error ?? "")
+        XCTAssertEqual(releases, 1, "Native busy status, diagnosis, targeted release, retry and verification must connect end to end")
+        XCTAssertFalse(ejector.isEjecting)
+        XCTAssertFalse(MountedSpace.snapshot().contains { $0.path == mount })
+        XCTAssertTrue(MediaLayout.read(disk).isEmpty, "Successful eject removes the original registry attachment")
+    }
+
+    private func imageOwnsDevice(path: String, device: String) throws -> Bool {
+        let data = try run("/usr/bin/hdiutil", ["info", "-plist"])
+        let info = try XCTUnwrap(try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
+        let images = info["images"] as? [[String: Any]] ?? []
+        let expected = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        return images.contains { image in
+            guard let imagePath = image["image-path"] as? String,
+                  URL(fileURLWithPath: imagePath).resolvingSymlinksInPath() == expected else { return false }
+            return (image["system-entities"] as? [[String: Any]] ?? []).contains { ($0["dev-entry"] as? String) == device }
+        }
+    }
+
+    private func run(_ executable: String, _ arguments: [String]) throws -> Data {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = pipe
+        process.standardError = FileHandle.standardError
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw NSError(domain: executable, code: Int(process.terminationStatus))
+        }
+        return data
+    }
+}
